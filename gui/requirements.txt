@@ -1,0 +1,16 @@
+# Core GUI
+PyQt5>=5.15
+
+# HTTP
+requests>=2.28
+
+# RAG — lightweight replacements for LangChain
+sentence-transformers>=2.2     # embedding
+faiss-cpu>=1.7                 # vector search
+
+# Document loaders
+pypdf>=3.0                     # PDF
+python-docx>=1.0               # DOCX
+
+# Optional: PostgreSQL backend
+# psycopg2-binary>=2.9
