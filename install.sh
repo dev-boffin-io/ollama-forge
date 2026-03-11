@@ -21,6 +21,7 @@ APP_NAME="Ollama-ai-gui"
 APP_TITLE="Ollama AI"
 APP_COMMENT="Manage & Chat With LLM Models"
 CLI_NAME="ollama-main"
+MGR_NAME="Ollama-ai-manager"
 
 # ---------------------------------------------------------
 # Paths
@@ -30,6 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILDER_DIR="$SCRIPT_DIR/builder"
 
 GUI_BIN="$SCRIPT_DIR/$APP_NAME"
+MGR_BIN="$SCRIPT_DIR/$MGR_NAME"       # must live beside GUI binary
 CLI_SOURCE="$SCRIPT_DIR/$CLI_NAME"
 ICON="$SCRIPT_DIR/ollama-forge.png"
 
@@ -91,8 +93,14 @@ run_build() {
 check_files() {
 
     [[ -f "$GUI_BIN" ]] || error "Missing GUI binary: $GUI_BIN"
-    [[ -x "$GUI_BIN" ]] || error "GUI binary not executable"
-    [[ -f "$ICON" ]]    || error "Missing icon: $ICON"
+    [[ -x "$GUI_BIN" ]] || error "GUI binary not executable: $GUI_BIN"
+
+    # Manager must sit beside the GUI binary — main.py launches it by name
+    [[ -f "$MGR_BIN" ]] || error "Missing Manager binary: $MGR_BIN
+  Both binaries must be in the same directory. Run: ./install.sh build"
+    [[ -x "$MGR_BIN" ]] || error "Manager binary not executable: $MGR_BIN"
+
+    [[ -f "$ICON" ]] || error "Missing icon: $ICON"
 }
 
 # ---------------------------------------------------------
@@ -177,6 +185,12 @@ install_all() {
     install_cli
 
     info "✔ Installation complete"
+    echo ""
+    echo "  GUI     : $GUI_BIN"
+    echo "  Manager : $MGR_BIN  (launched automatically by GUI)"
+    echo "  CLI     : $CLI_TARGET"
+    echo ""
+    echo "  Both binaries must stay in the same folder."
 }
 
 # ---------------------------------------------------------
@@ -215,9 +229,9 @@ case "${1:-}" in
     *)
         echo
         echo "Usage:"
-        echo "  ./install.sh build"
-        echo "  ./install.sh"
-        echo "  ./install.sh remove"
+        echo "  ./install.sh build    → build binaries + install"
+        echo "  ./install.sh          → install (binaries must exist)"
+        echo "  ./install.sh remove   → uninstall"
         echo
         exit 1
         ;;

@@ -17,7 +17,7 @@ SRC_FILE="$PROJECT_ROOT/ollama-main.py"
 DIST_BIN="$PROJECT_ROOT/dist/ollama-main"
 TARGET_BIN="$PROJECT_ROOT/ollama-main"
 
-VENV_DIR="$SCRIPT_DIR/.venv-build"
+VENV_DIR="$SCRIPT_DIR/.venv-build-main"
 PYINSTALLER_BIN=""
 
 echo "Building ollama-main installer..."
@@ -28,7 +28,6 @@ echo ""
 # ─────────────────────────────────────────────────────────────
 
 PY_BIN=""
-
 for p in python3 python; do
     if command -v "$p" >/dev/null 2>&1; then
         PY_BIN="$(command -v "$p")"
@@ -60,14 +59,18 @@ ARCH="$(uname -m)"
 echo "Architecture : $ARCH"
 
 # ─────────────────────────────────────────────────────────────
-# Install PyInstaller
+# Install deps + PyInstaller
 # ─────────────────────────────────────────────────────────────
 
 install_pyinstaller() {
-
-    echo "Installing PyInstaller..."
+    echo "Installing dependencies..."
 
     pip install --quiet --upgrade pip setuptools wheel
+
+    # requests + packaging — used by ollama-main.py at runtime
+    pip install --quiet \
+        requests \
+        packaging
 
     pip install --quiet \
         --ignore-installed \
@@ -127,6 +130,9 @@ cd "$PROJECT_ROOT"
     --onefile \
     --name ollama-main \
     --clean \
+    --hidden-import requests \
+    --hidden-import packaging \
+    --hidden-import packaging.version \
     ollama-main.py
 
 # ─────────────────────────────────────────────────────────────
