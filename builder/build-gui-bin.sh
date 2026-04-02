@@ -110,8 +110,15 @@ install_pyinstaller() {
         pyinstaller \
         pyinstaller-hooks-contrib
 
+    # Force-reinstall setuptools AFTER pyinstaller so its dist-info lands in
+    # the venv's own site-packages. On ARM64 (--system-site-packages), the
+    # system setuptools is visible to Python but NOT to PyInstaller's isolated
+    # child process which only scans the venv → version=None → TypeError.
+    # Must come after pyinstaller because pip may pull in a different version.
+    pip install --quiet --force-reinstall setuptools
+
     local installed
-    installed="$(pip show pyinstaller 2>/dev/null | grep -i '^Version:' | awk '{print $2}')" || true
+    installed="$(pip show pyinstaller 2>/dev/null | grep -i '^Version:' | awk '{print $2}')"
     echo "PyInstaller installed: ${installed:-unknown}"
 
     PYINSTALLER_BIN="$VENV_DIR/bin/pyinstaller"

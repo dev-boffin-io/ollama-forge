@@ -65,7 +65,7 @@ echo "Architecture : $ARCH"
 install_pyinstaller() {
     echo "Installing dependencies..."
 
-    pip install --quiet --upgrade pip setuptools wheel
+    pip install --quiet --upgrade pip
 
     # requests + packaging — used by ollama-main.py at runtime
     pip install --quiet \
@@ -76,6 +76,12 @@ install_pyinstaller() {
         --ignore-installed \
         pyinstaller \
         pyinstaller-hooks-contrib
+
+    # Force-reinstall setuptools AFTER pyinstaller so its dist-info lands in
+    # the venv's own site-packages. On ARM64 (--system-site-packages), the
+    # system setuptools is visible to Python but NOT to PyInstaller's isolated
+    # child process which only scans the venv → version=None → TypeError.
+    pip install --quiet --force-reinstall setuptools
 
     PYINSTALLER_BIN="$VENV_DIR/bin/pyinstaller"
 

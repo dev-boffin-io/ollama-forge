@@ -1,21 +1,16 @@
 # =========================================================
 # Ollama Forge — Makefile
 # =========================================================
-
 APP_GUI  = Ollama-ai-gui
 APP_MGR  = Ollama-ai-manager
 CLI_BIN  = ollama-main
-DA_BIN   = dev-assist
-
+DA_BIN   = da
 BUILDER_DIR    = builder
 BUILD_GUI      = $(BUILDER_DIR)/build-gui-bin.sh
 BUILD_MAIN     = $(BUILDER_DIR)/build-main.sh
 INSTALL_SCRIPT = install.sh
-
 include dev-assist.mk
-
 .PHONY: help build build-all install install-all uninstall rebuild clean
-
 # ---------------------------------------------------------
 # Help
 # ---------------------------------------------------------
@@ -27,8 +22,8 @@ help:
 	@echo "  make build          build GUI, Manager, ollama-main"
 	@echo "  make install        install GUI (builds first if needed)"
 	@echo "  make uninstall      remove desktop entry and symlinks"
-	@echo "  make rebuild        clean then build GUI"
-	@echo "  make clean          remove GUI binaries"
+	@echo "  make rebuild        clean then build everything"
+	@echo "  make clean          remove all binaries"
 	@echo ""
 	@echo "  ── dev-assist ───────────────────────────────────────────"
 	@echo "  make da-build       build dev-assist binary"
@@ -44,7 +39,6 @@ help:
 	@echo "  make build-all      build GUI + dev-assist"
 	@echo "  make install-all    install GUI + dev-assist"
 	@echo ""
-
 # ---------------------------------------------------------
 # Build GUI + Manager + ollama-main
 # ---------------------------------------------------------
@@ -54,44 +48,42 @@ build:
 	@echo "➜ Building ollama-main CLI"
 	bash $(BUILD_MAIN)
 	@echo "✔ Build complete"
-
 # ---------------------------------------------------------
 # Build everything
 # ---------------------------------------------------------
 build-all: build da-build
-
 # ---------------------------------------------------------
 # Install GUI  (builds first if binaries are missing)
 # ---------------------------------------------------------
 install:
-	@if [ ! -f "$(APP_GUI)" ] || [ ! -f "$(APP_MGR)" ] || [ ! -f "$(CLI_BIN)" ]; then \
-		echo "➜ Binaries not found — building first"; \
+	# FIX 1: -x instead of -f (detects missing + non-executable)
+	@if [ ! -x "$(APP_GUI)" ] || [ ! -x "$(APP_MGR)" ] || [ ! -x "$(CLI_BIN)" ]; then \
+		echo "➜ Binaries not found or not executable — building first"; \
 		$(MAKE) build; \
 	fi
-	bash $(INSTALL_SCRIPT)
-
+	# FIX 2: explicit 'install' arg — future-proof against script default changes
+	bash $(INSTALL_SCRIPT) install
 # ---------------------------------------------------------
 # Install GUI + dev-assist
 # ---------------------------------------------------------
+# FIX 3: single entrypoint via install.sh build — avoids double invocation
 install-all:
-	$(MAKE) install
-	$(MAKE) da-install
-
+	bash $(INSTALL_SCRIPT) build
 # ---------------------------------------------------------
 # Uninstall everything
 # ---------------------------------------------------------
 uninstall:
 	bash $(INSTALL_SCRIPT) remove
-
 # ---------------------------------------------------------
-# Rebuild GUI
+# Rebuild everything
 # ---------------------------------------------------------
-rebuild: clean build
-
+# FIX 5: include da-build so dev-assist isn't left behind
+rebuild: clean build da-build
 # ---------------------------------------------------------
-# Clean GUI binaries
+# Clean all binaries
 # ---------------------------------------------------------
+# FIX 4: also remove DA_BIN so clean is truly complete
 clean:
-	@echo "➜ Cleaning GUI build artifacts"
-	rm -f $(APP_GUI) $(APP_MGR) $(CLI_BIN)
+	@echo "➜ Cleaning all build artifacts"
+	rm -f $(APP_GUI) $(APP_MGR) $(CLI_BIN) $(DA_BIN)
 	@echo "✔ Clean complete"

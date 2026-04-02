@@ -3,16 +3,18 @@
 # build-dev-assist.sh
 #
 # Builds the dev-assist CLI binary via PyInstaller.
-# Keeps dev-assist/.venv intact between builds.
-# Moves the finished binary to the project root.
+# Creates a fresh venv every build.
+# Outputs final binary outside the project directory.
 #
 # Usage:
 #   bash builder/build-dev-assist.sh
-#   bash builder/build-dev-assist.sh --clean   # wipe .venv too
+#   bash builder/build-dev-assist.sh --clean
 # =========================================================
+
 set -euo pipefail
 IFS=$'\n\t'
 
+# ── Colors ───────────────────────────────────────────────
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -27,56 +29,74 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 # ── Paths ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 DEV_ASSIST_DIR="$PROJECT_ROOT/dev-assist"
 BUILD_SCRIPT="$DEV_ASSIST_DIR/build.sh"
+
 BINARY_NAME="dev-assist"
 DIST_BINARY="$DEV_ASSIST_DIR/dist/$BINARY_NAME"
-DEST_BINARY="$PROJECT_ROOT/$BINARY_NAME"
+
+# Final output config
+FINAL_NAME="da"
+FINAL_BINARY="$PROJECT_ROOT/$FINAL_NAME"
 
 # ── Validate ─────────────────────────────────────────────
-[[ -d "$DEV_ASSIST_DIR" ]] || die "dev-assist/ directory not found at: $DEV_ASSIST_DIR"
-[[ -f "$BUILD_SCRIPT"   ]] || die "build.sh not found at: $BUILD_SCRIPT"
+[[ -d "$DEV_ASSIST_DIR" ]] || die "dev-assist/ not found → $DEV_ASSIST_DIR"
+[[ -f "$BUILD_SCRIPT"   ]] || die "build.sh not found → $BUILD_SCRIPT"
 
 # ── Clean mode ───────────────────────────────────────────
 if [[ "${1:-}" == "--clean" ]]; then
-    warn "Clean mode: removing dev-assist/.venv, build/, dist/"
+    warn "Cleaning: .venv, build/, dist/"
     rm -rf "$DEV_ASSIST_DIR/.venv" \
            "$DEV_ASSIST_DIR/build" \
            "$DEV_ASSIST_DIR/dist"
-    ok "Cleaned."
+    ok "Clean complete"
+fi
+
+# ── Reset venv (always fresh build) ──────────────────────
+if [[ -d "$DEV_ASSIST_DIR/.venv" ]]; then
+    info "Removing stale .venv..."
+    rm -rf "$DEV_ASSIST_DIR/.venv"
+    ok ".venv removed"
 fi
 
 # ── Build ────────────────────────────────────────────────
-info "Building dev-assist binary..."
-info "Source: $DEV_ASSIST_DIR"
+info "Building binary..."
+(
+    cd "$DEV_ASSIST_DIR"
+    bash build.sh
+)
 
-cd "$DEV_ASSIST_DIR"
-bash build.sh
-cd "$PROJECT_ROOT"
+# ── Verify build ─────────────────────────────────────────
+[[ -f "$DIST_BINARY" ]] || die "Build failed → $DIST_BINARY not found"
 
-# ── Verify ───────────────────────────────────────────────
-[[ -f "$DIST_BINARY" ]] || die "Build failed — binary not found at $DIST_BINARY"
+# ── Prepare destination ──────────────────────────────────
 
-# ── Move binary to project root ──────────────────────────
-info "Moving binary to project root..."
-mv -f "$DIST_BINARY" "$DEST_BINARY"
-chmod +x "$DEST_BINARY"
-ok "Binary ready: $DEST_BINARY  ($(du -sh "$DEST_BINARY" | cut -f1))"
+if [[ -f "$FINAL_BINARY" ]]; then
+    warn "Existing binary found → removing $FINAL_BINARY"
+    rm -f "$FINAL_BINARY" || die "Failed to remove old binary"
+fi
 
-# ── Clean build artifacts (keep .venv) ───────────────────
-info "Cleaning build artifacts (keeping .venv)..."
-rm -rf "$DEV_ASSIST_DIR/build"
-rm -rf "$DEV_ASSIST_DIR/dist"
-ok "Build dirs removed. .venv preserved for faster rebuilds."
+# ── Move (rename + relocate in one step) ─────────────────
+info "Installing binary → $FINAL_BINARY"
+mv -f "$DIST_BINARY" "$FINAL_BINARY"
+chmod +x "$FINAL_BINARY"
+
+ok "Binary ready: $FINAL_BINARY  ($(du -sh "$FINAL_BINARY" | cut -f1))"
+
+# ── Cleanup build artifacts ──────────────────────────────
+info "Cleaning build artifacts..."
+rm -rf "$DEV_ASSIST_DIR/build" "$DEV_ASSIST_DIR/dist"
+ok "Cleanup complete (.venv preserved)"
 
 # ── Summary ──────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo "  ✅ dev-assist build complete"
 echo ""
-echo "  Binary : $DEST_BINARY"
-echo "  Size   : $(du -sh "$DEST_BINARY" | cut -f1)"
+echo "  Binary : $FINAL_BINARY"
+echo "  Size   : $(du -sh "$FINAL_BINARY" | cut -f1)"
 echo ""
-echo "  Run CLI : ./dev-assist"
-echo "  Run Web : ./dev-assist --web"
+echo "  Run CLI : $FINAL_BINARY"
+echo "  Run Web : $FINAL_BINARY --web"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

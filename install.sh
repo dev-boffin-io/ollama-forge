@@ -21,7 +21,7 @@ APP_TITLE="Ollama AI"
 APP_COMMENT="Manage & Chat With LLM Models"
 CLI_NAME="ollama-main"
 MGR_NAME="Ollama-ai-manager"
-DA_NAME="dev-assist"
+DA_NAME="da"
 
 # ---------------------------------------------------------
 # Paths
@@ -106,10 +106,7 @@ check_gui_files() {
     [[ -f "$ICON" ]] || error "Missing icon: $ICON"
 }
 
-check_da_file() {
-    [[ -f "$DA_SOURCE" && -x "$DA_SOURCE" ]] || error "Missing/non-executable dev-assist binary: $DA_SOURCE
-  Run: make da-build   or   bash builder/build-dev-assist.sh"
-}
+# check_da_file removed — install_da_cli handles missing binary itself
 
 # ---------------------------------------------------------
 # Desktop entry
@@ -163,8 +160,13 @@ remove_cli() {
     fi
 }
 
+# FIX 1: auto-build if binary missing, instead of hard-failing
 install_da_cli() {
-    check_da_file
+    if [[ ! -x "$DA_SOURCE" ]]; then
+        warn "dev-assist binary not found → building..."
+        run_build_da
+    fi
+    [[ -x "$DA_SOURCE" ]] || error "dev-assist build failed"
     mkdir -p "$BIN_DIR"
     ln -sf "$DA_SOURCE" "$DA_TARGET"
     ok "dev-assist → $DA_TARGET"
@@ -183,17 +185,22 @@ remove_da_cli() {
 # Full install / uninstall
 # ---------------------------------------------------------
 install_all() {
+    # FIX 3: auto-build GUI if binaries are missing
+    if [[ ! -x "$GUI_BIN" || ! -x "$MGR_BIN" ]]; then
+        warn "GUI binaries missing → building..."
+        run_build_gui
+    fi
     check_gui_files
     info "Install mode: $MODE"
 
     install_desktop
     install_cli
 
-    # dev-assist is optional — install if binary exists
-    if [[ -f "$DA_SOURCE" && -x "$DA_SOURCE" ]]; then
+    # FIX 4: cleaner -x check, consistent warning message
+    if [[ -x "$DA_SOURCE" ]]; then
         install_da_cli
     else
-        warn "dev-assist binary not found — skipping (run: make da-build)"
+        warn "dev-assist not found → skipping (run: ./install.sh build-da)"
     fi
 
     echo ""
@@ -202,7 +209,8 @@ install_all() {
     echo "  GUI      : $GUI_BIN"
     echo "  Manager  : $MGR_BIN  (launched automatically by GUI)"
     echo "  CLI      : $CLI_TARGET"
-    [[ -L "$DA_TARGET" ]] && echo "  AI CLI   : $DA_TARGET  (dev-assist --web for browser UI)"
+    # FIX 2: use $DA_NAME instead of hardcoded "dev-assist"
+    [[ -L "$DA_TARGET" ]] && echo "  AI CLI   : $DA_TARGET  ($DA_NAME --web for browser UI)"
     echo ""
     echo "  Both GUI binaries must stay in the same folder."
 }
@@ -245,8 +253,9 @@ case "${1:-}" in
         install_da_cli
         echo ""
         ok "dev-assist installed → $DA_TARGET"
-        echo "  Run CLI : dev-assist"
-        echo "  Run Web : dev-assist --web"
+        # FIX 2: use $DA_NAME variable, not hardcoded string
+        echo "  Run CLI : $DA_NAME"
+        echo "  Run Web : $DA_NAME --web"
         ;;
 
     da-remove)
