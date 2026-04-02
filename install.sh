@@ -3,117 +3,121 @@
 # Ollama Forge Installer
 #
 # Commands:
-#   ./install.sh build        → build + install
-#   ./install.sh              → user install
-#   sudo ./install.sh         → system install
-#   ./install.sh remove       → user uninstall
-#   sudo ./install.sh remove  → system uninstall
+#   ./install.sh              → install GUI + Manager + CLI + dev-assist (user)
+#   sudo ./install.sh         → system-wide install
+#   ./install.sh build        → build all + install
+#   ./install.sh da-install   → install dev-assist CLI only
+#   ./install.sh da-remove    → remove dev-assist CLI only
+#   ./install.sh remove       → uninstall everything
 # =========================================================
-
-set -Eeuo pipefail
+set -euo pipefail
 IFS=$'\n\t'
 
 # ---------------------------------------------------------
-# App Info
+# App info
 # ---------------------------------------------------------
-
 APP_NAME="Ollama-ai-gui"
 APP_TITLE="Ollama AI"
 APP_COMMENT="Manage & Chat With LLM Models"
 CLI_NAME="ollama-main"
 MGR_NAME="Ollama-ai-manager"
+DA_NAME="dev-assist"
 
 # ---------------------------------------------------------
 # Paths
 # ---------------------------------------------------------
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILDER_DIR="$SCRIPT_DIR/builder"
 
 GUI_BIN="$SCRIPT_DIR/$APP_NAME"
-MGR_BIN="$SCRIPT_DIR/$MGR_NAME"       # must live beside GUI binary
+MGR_BIN="$SCRIPT_DIR/$MGR_NAME"
 CLI_SOURCE="$SCRIPT_DIR/$CLI_NAME"
+DA_SOURCE="$SCRIPT_DIR/$DA_NAME"
 ICON="$SCRIPT_DIR/ollama-forge.png"
 
 BUILD_GUI="$BUILDER_DIR/build-gui-bin.sh"
 BUILD_MAIN="$BUILDER_DIR/build-main.sh"
+BUILD_DA="$BUILDER_DIR/build-dev-assist.sh"
 
 # ---------------------------------------------------------
-# Install Mode
+# Install mode (user vs system)
 # ---------------------------------------------------------
-
 if [[ $EUID -eq 0 ]]; then
     MODE="system"
     DESKTOP_DIR="/usr/local/share/applications"
-    CLI_TARGET="/usr/local/bin/$CLI_NAME"
+    BIN_DIR="/usr/local/bin"
 else
     MODE="user"
     DESKTOP_DIR="$HOME/.local/share/applications"
-    CLI_TARGET="$HOME/.local/bin/$CLI_NAME"
+    BIN_DIR="$HOME/.local/bin"
 fi
 
+CLI_TARGET="$BIN_DIR/$CLI_NAME"
+DA_TARGET="$BIN_DIR/$DA_NAME"
 DESKTOP_FILE="$DESKTOP_DIR/$APP_NAME.desktop"
 
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
-
 info()  { echo "➜ $*"; }
+ok()    { echo "✔ $*"; }
+warn()  { echo "! $*"; }
 error() { echo "✖ $*" >&2; exit 1; }
 
 # ---------------------------------------------------------
-# Build System
+# Build helpers
 # ---------------------------------------------------------
-
-run_build() {
-
-    info "Starting build process"
-
-    [[ -f "$BUILD_GUI" ]]  || error "Missing build script: $BUILD_GUI"
-    [[ -f "$BUILD_MAIN" ]] || error "Missing build script: $BUILD_MAIN"
-
-    chmod +x "$BUILD_GUI" "$BUILD_MAIN"
-
+_run_as_user() {
+    local script="$1"
     if [[ -n "${SUDO_USER:-}" ]]; then
-        info "Running build as user: $SUDO_USER"
-        sudo -u "$SUDO_USER" bash "$BUILD_GUI"
-        sudo -u "$SUDO_USER" bash "$BUILD_MAIN"
+        sudo -u "$SUDO_USER" bash "$script"
     else
-        bash "$BUILD_GUI"
-        bash "$BUILD_MAIN"
+        bash "$script"
     fi
+}
 
-    info "✔ Build complete"
+run_build_gui() {
+    [[ -f "$BUILD_GUI"  ]] || error "Missing: $BUILD_GUI"
+    [[ -f "$BUILD_MAIN" ]] || error "Missing: $BUILD_MAIN"
+    chmod +x "$BUILD_GUI" "$BUILD_MAIN"
+    info "Building GUI + Manager..."
+    _run_as_user "$BUILD_GUI"
+    info "Building CLI (ollama-main)..."
+    _run_as_user "$BUILD_MAIN"
+    ok "GUI + CLI build complete"
+}
+
+run_build_da() {
+    [[ -f "$BUILD_DA" ]] || error "Missing: $BUILD_DA"
+    chmod +x "$BUILD_DA"
+    info "Building dev-assist..."
+    _run_as_user "$BUILD_DA"
+    ok "dev-assist build complete"
 }
 
 # ---------------------------------------------------------
 # Validation
 # ---------------------------------------------------------
-
-check_files() {
-
-    [[ -f "$GUI_BIN" ]] || error "Missing GUI binary: $GUI_BIN"
-    [[ -x "$GUI_BIN" ]] || error "GUI binary not executable: $GUI_BIN"
-
-    # Manager must sit beside the GUI binary — main.py launches it by name
-    [[ -f "$MGR_BIN" ]] || error "Missing Manager binary: $MGR_BIN
-  Both binaries must be in the same directory. Run: ./install.sh build"
-    [[ -x "$MGR_BIN" ]] || error "Manager binary not executable: $MGR_BIN"
-
+check_gui_files() {
+    [[ -f "$GUI_BIN" && -x "$GUI_BIN" ]] || error "Missing/non-executable GUI binary: $GUI_BIN
+  Run: make build   or   ./install.sh build"
+    [[ -f "$MGR_BIN" && -x "$MGR_BIN" ]] || error "Missing/non-executable Manager binary: $MGR_BIN
+  Both binaries must be in the same directory."
     [[ -f "$ICON" ]] || error "Missing icon: $ICON"
 }
 
-# ---------------------------------------------------------
-# Desktop Entry
-# ---------------------------------------------------------
+check_da_file() {
+    [[ -f "$DA_SOURCE" && -x "$DA_SOURCE" ]] || error "Missing/non-executable dev-assist binary: $DA_SOURCE
+  Run: make da-build   or   bash builder/build-dev-assist.sh"
+}
 
+# ---------------------------------------------------------
+# Desktop entry
+# ---------------------------------------------------------
 install_desktop() {
-
-    info "Installing desktop entry"
-
+    info "Installing desktop entry ($MODE)"
     mkdir -p "$DESKTOP_DIR"
-
-    cat > "$DESKTOP_FILE" <<EOF
+    cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
 Name=$APP_TITLE
@@ -125,97 +129,128 @@ Type=Application
 Categories=Development;IDE;
 StartupNotify=true
 EOF
-
     chmod 644 "$DESKTOP_FILE"
-
-    if command -v update-desktop-database >/dev/null; then
+    command -v update-desktop-database &>/dev/null && \
         update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-    fi
-
-    info "Desktop entry installed"
+    ok "Desktop entry: $DESKTOP_FILE"
 }
 
 remove_desktop() {
-
     if [[ -f "$DESKTOP_FILE" ]]; then
         rm -f "$DESKTOP_FILE"
-
-        command -v update-desktop-database >/dev/null && \
+        command -v update-desktop-database &>/dev/null && \
             update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-
-        info "Desktop entry removed"
+        ok "Desktop entry removed"
     else
-        info "Desktop entry not found"
+        warn "Desktop entry not found (already removed?)"
     fi
 }
 
 # ---------------------------------------------------------
-# CLI
+# CLI symlinks
 # ---------------------------------------------------------
-
 install_cli() {
-
-    mkdir -p "$(dirname "$CLI_TARGET")"
-
-    rm -f "$CLI_TARGET"
-    ln -s "$CLI_SOURCE" "$CLI_TARGET"
-
-    info "CLI installed → $CLI_TARGET"
+    [[ -f "$CLI_SOURCE" ]] || { warn "ollama-main binary not found — skipping CLI symlink"; return; }
+    mkdir -p "$BIN_DIR"
+    ln -sf "$CLI_SOURCE" "$CLI_TARGET"
+    ok "ollama-main → $CLI_TARGET"
 }
 
 remove_cli() {
-
     if [[ -f "$CLI_TARGET" || -L "$CLI_TARGET" ]]; then
         rm -f "$CLI_TARGET"
-        info "CLI removed"
+        ok "ollama-main symlink removed"
+    fi
+}
+
+install_da_cli() {
+    check_da_file
+    mkdir -p "$BIN_DIR"
+    ln -sf "$DA_SOURCE" "$DA_TARGET"
+    ok "dev-assist → $DA_TARGET"
+}
+
+remove_da_cli() {
+    if [[ -f "$DA_TARGET" || -L "$DA_TARGET" ]]; then
+        rm -f "$DA_TARGET"
+        ok "dev-assist symlink removed"
+    else
+        warn "dev-assist symlink not found (already removed?)"
     fi
 }
 
 # ---------------------------------------------------------
-# Install
+# Full install / uninstall
 # ---------------------------------------------------------
-
 install_all() {
-
-    check_files
-
+    check_gui_files
     info "Install mode: $MODE"
 
     install_desktop
     install_cli
 
-    info "✔ Installation complete"
-    echo ""
-    echo "  GUI     : $GUI_BIN"
-    echo "  Manager : $MGR_BIN  (launched automatically by GUI)"
-    echo "  CLI     : $CLI_TARGET"
-    echo ""
-    echo "  Both binaries must stay in the same folder."
-}
+    # dev-assist is optional — install if binary exists
+    if [[ -f "$DA_SOURCE" && -x "$DA_SOURCE" ]]; then
+        install_da_cli
+    else
+        warn "dev-assist binary not found — skipping (run: make da-build)"
+    fi
 
-# ---------------------------------------------------------
-# Uninstall
-# ---------------------------------------------------------
+    echo ""
+    ok "Installation complete ($MODE)"
+    echo ""
+    echo "  GUI      : $GUI_BIN"
+    echo "  Manager  : $MGR_BIN  (launched automatically by GUI)"
+    echo "  CLI      : $CLI_TARGET"
+    [[ -L "$DA_TARGET" ]] && echo "  AI CLI   : $DA_TARGET  (dev-assist --web for browser UI)"
+    echo ""
+    echo "  Both GUI binaries must stay in the same folder."
+}
 
 remove_all() {
-
-    info "Removing installation"
-
+    info "Removing installation ($MODE)"
     remove_desktop
     remove_cli
-
-    info "✔ Uninstall complete"
+    remove_da_cli
+    echo ""
+    ok "Uninstall complete"
 }
 
 # ---------------------------------------------------------
-# CLI Interface
+# Entry point
 # ---------------------------------------------------------
-
 case "${1:-}" in
 
     build)
-        run_build
+        run_build_gui
+        run_build_da
         install_all
+        ;;
+
+    build-gui)
+        run_build_gui
+        check_gui_files
+        install_desktop
+        install_cli
+        ok "GUI build + install complete"
+        ;;
+
+    build-da | build-dev-assist)
+        run_build_da
+        install_da_cli
+        ok "dev-assist build + install complete"
+        ;;
+
+    da-install)
+        install_da_cli
+        echo ""
+        ok "dev-assist installed → $DA_TARGET"
+        echo "  Run CLI : dev-assist"
+        echo "  Run Web : dev-assist --web"
+        ;;
+
+    da-remove)
+        remove_da_cli
         ;;
 
     remove)
@@ -227,13 +262,17 @@ case "${1:-}" in
         ;;
 
     *)
-        echo
+        echo ""
         echo "Usage:"
-        echo "  ./install.sh build    → build binaries + install"
-        echo "  ./install.sh          → install (binaries must exist)"
-        echo "  ./install.sh remove   → uninstall"
-        echo
+        echo "  ./install.sh              → install all (binaries must exist)"
+        echo "  ./install.sh build        → build all + install"
+        echo "  ./install.sh build-gui    → build GUI/CLI + install"
+        echo "  ./install.sh build-da     → build dev-assist + install"
+        echo "  ./install.sh da-install   → install dev-assist CLI only"
+        echo "  ./install.sh da-remove    → remove dev-assist CLI only"
+        echo "  ./install.sh remove       → uninstall everything"
+        echo "  sudo ./install.sh         → system-wide install"
+        echo ""
         exit 1
         ;;
-
 esac

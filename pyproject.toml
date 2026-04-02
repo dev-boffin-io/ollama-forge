@@ -1,32 +1,54 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires      = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
+
+# =============================================================================
+# Project metadata
+# =============================================================================
 
 [project]
 name            = "ollama-forge"
-version         = "1.0.0"
-description     = "Local AI GUI — chat, RAG, crews and model management powered by Ollama"
+version         = "1.1.0"
+description     = "Local AI toolkit — desktop GUI, DevOps CLI, RAG, and model management powered by Ollama"
 readme          = "README.md"
 license         = { file = "LICENSE" }
 requires-python = ">=3.10"
-
-keywords = ["ollama", "llm", "ai", "gui", "rag", "local-ai"]
-
+keywords        = [
+    "ollama", "llm", "ai", "gui", "rag", "local-ai",
+    "devops", "cli", "chainlit", "pyqt5",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: X11 Applications :: Qt",
+    "Environment :: Console",
+    "Environment :: Web Environment",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: System :: Systems Administration",
 ]
 
-dependencies = [
+# Core deps are kept minimal — each component installs its own via build scripts.
+# Use optional-dependencies below to install a specific component.
+dependencies = []
+
+# =============================================================================
+# Optional dependency groups
+# =============================================================================
+
+[project.optional-dependencies]
+
+# ── GUI (Ollama AI desktop app) ──────────────────────────────────────────────
+gui = [
     "PyQt5>=5.15",
     "requests>=2.31",
     "numpy>=1.24",
@@ -37,17 +59,127 @@ dependencies = [
     "packaging>=23.0",
 ]
 
-[project.optional-dependencies]
+# ── dev-assist core (terminal CLI) ──────────────────────────────────────────
+da-core = [
+    "pydantic>=2.0",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "jinja2>=3.1",
+    "ollama",
+]
+
+# ── dev-assist web UI ────────────────────────────────────────────────────────
+da-web = [
+    "chainlit>=2.0",
+    "bcrypt>=4.0",
+]
+
+# ── dev-assist RAG embeddings (optional) ────────────────────────────────────
+da-rag = [
+    "sentence-transformers",
+]
+
+# ── Full dev-assist (CLI + Web + RAG) ───────────────────────────────────────
+da-all = [
+    "ollama-forge[da-core]",
+    "ollama-forge[da-web]",
+    "ollama-forge[da-rag]",
+]
+
+# ── Development / build tools ────────────────────────────────────────────────
 dev = [
     "pyinstaller>=6.0",
     "pyinstaller-hooks-contrib>=2024.0",
+    "ruff",
+    "black",
+    "isort",
+    "pyright",
+    "pre-commit",
+    "pytest",
+    "pytest-asyncio",
 ]
+
+# ── Everything ───────────────────────────────────────────────────────────────
+all = [
+    "ollama-forge[gui]",
+    "ollama-forge[da-all]",
+    "ollama-forge[dev]",
+]
+
+# =============================================================================
+# Entry points
+# =============================================================================
 
 [project.scripts]
 ollama-main = "ollama-main:main"
+dev-assist  = "dev-assist.main:main"
+
+# =============================================================================
+# Package discovery
+# =============================================================================
 
 [tool.setuptools.packages.find]
-where = ["gui"]
+where   = ["."]
+include = ["gui*", "dev-assist*", "dev_assist*"]
+exclude = [
+    "dev-assist/.venv*",
+    "dev-assist/build*",
+    "dev-assist/dist*",
+    "dev-assist/tests*",
+]
 
 [tool.setuptools.package-data]
-"*" = ["*.png", "*.md"]
+"*" = [
+    "*.png",
+    "*.md",
+    "config/settings.json",
+    "public/**",
+    ".chainlit/**",
+    "chainlit.md",
+]
+
+# =============================================================================
+# Linting / formatting (dev-assist source)
+# =============================================================================
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+exclude = [
+    "dev-assist/.venv",
+    "dev-assist/build",
+    "dev-assist/dist",
+]
+
+[tool.black]
+line-length    = 100
+target-version = ["py310"]
+exclude        = '''
+/(
+    dev-assist/\.venv
+  | dev-assist/build
+  | dev-assist/dist
+)/
+'''
+
+[tool.isort]
+profile     = "black"
+line_length = 100
+skip_glob   = ["dev-assist/.venv/*", "dev-assist/build/*"]
+
+[tool.pyright]
+pythonVersion    = "3.10"
+typeCheckingMode = "basic"
+exclude          = ["dev-assist/.venv", "dev-assist/build", "dev-assist/dist"]
+
+# =============================================================================
+# Tests (dev-assist)
+# =============================================================================
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths    = ["dev-assist/tests"]

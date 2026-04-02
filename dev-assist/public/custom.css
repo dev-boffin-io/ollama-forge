@@ -1,0 +1,84 @@
+/* dev-assist — Custom Chainlit UI Styles */
+
+/* ── Hide Chainlit branding ─────────────────────────────────────── */
+/* Footer "Built with Chainlit" */
+footer,
+[class*="footer"],
+[class*="watermark"],
+a[href*="chainlit.io"],
+a[href*="chainlit"] {
+  display: none !important;
+}
+
+/* ── Header: replace title with dev-assist ──────────────────────── */
+/* App name in header */
+[class*="app-name"],
+[class*="AppName"],
+header [class*="title"] {
+  font-family: monospace !important;
+  letter-spacing: 0.05em;
+}
+
+/* ── Chat header banner ─────────────────────────────────────────── */
+/* ASCII art banner block in welcome message */
+.message-content pre code {
+  font-size: 0.6rem;
+  line-height: 1.2;
+  color: #7F77DD;
+}
+
+/* Dark mode banner color */
+@media (prefers-color-scheme: dark) {
+  .message-content pre code {
+    color: #AFA9EC;
+  }
+}
+
+/* ── Accent color → purple (matches dev-assist brand) ──────────── */
+:root {
+  --primary: #7F77DD;
+  --primary-hover: #534AB7;
+}
+
+/* Send button */
+button[type="submit"],
+[class*="send-button"] {
+  background-color: #7F77DD !important;
+}
+
+button[type="submit"]:hover,
+[class*="send-button"]:hover {
+  background-color: #534AB7 !important;
+}
+
+/* ── Input box ──────────────────────────────────────────────────── */
+[class*="input"],
+textarea {
+  border-radius: 8px !important;
+}
+
+/* ── Code blocks ────────────────────────────────────────────────── */
+pre {
+  border-radius: 8px !important;
+  border-left: 3px solid #7F77DD !important;
+}
+
+/* ── Settings panel label ───────────────────────────────────────── */
+[class*="settings"] [class*="label"] {
+  font-weight: 500;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #7F77DD44;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #7F77DD88;
+}

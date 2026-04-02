@@ -1,0 +1,26 @@
+#!/bin/bash
+# pre-push hook — auto code audit before every git push
+# Install: cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON=$(command -v python3 || command -v python)
+
+echo "⚡ dev-assist: Running pre-push audit..."
+
+cd "$SCRIPT_DIR"
+$PYTHON -c "
+from modules.code_audit import run
+run('')
+" 2>/dev/null
+
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
+    echo "⚠️  Audit encountered issues. Push anyway? [y/N]: "
+    read CHOICE
+    if [[ ! "$CHOICE" =~ ^[Yy]$ ]]; then
+        echo "🛑 Push cancelled."
+        exit 1
+    fi
+fi
+
+exit 0

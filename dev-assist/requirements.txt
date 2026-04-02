@@ -1,0 +1,27 @@
+# dev-assist dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── AI Engine (choose one) ───────────────────────────────────────────────────
+ollama                        # local AI — recommended
+
+# openai                      # OpenAI API
+# groq                        # Groq API (fast free tier)
+
+# ── Config validation (strongly recommended) ─────────────────────────────────
+pydantic>=2.0
+
+# ── Security (required for web UI) ───────────────────────────────────────────
+bcrypt>=4.0                   # password hashing — REQUIRED for web_chat.py
+
+# ── Better terminal UI (recommended) ─────────────────────────────────────────
+rich>=13.0
+prompt-toolkit>=3.0
+
+# ── Prompt templates (optional) ──────────────────────────────────────────────
+jinja2>=3.1
+
+# ── Web UI (required for --web mode) ─────────────────────────────────────────
+chainlit>=2.0
+
+# ── Dev / Linting ────────────────────────────────────────────────────────────
+# ruff  black  isort  pyright  pre-commit  pytest  pytest-asyncio
