@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 ollama-forge contributors
+Copyright (c) 2024-2025 dev-boffin-io
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,16 +20,34 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----
+─────────────────────────────────────────────────────────────────────────────
+Third-Party Acknowledgements
+─────────────────────────────────────────────────────────────────────────────
 
-This project uses the following open-source components:
+This project builds upon the work of many outstanding open-source contributors.
+Their projects are listed below with sincere gratitude.
 
-  Ollama          — MIT License    https://github.com/ollama/ollama
-  PyQt5           — GPL v3         https://www.riverbankcomputing.com/software/pyqt/
-  sentence-transformers — Apache 2.0  https://github.com/UKPLab/sentence-transformers
-  FAISS           — MIT License    https://github.com/facebookresearch/faiss
-  Requests        — Apache 2.0     https://github.com/psf/requests
-  pypdf           — BSD 3-Clause   https://github.com/py-pdf/pypdf
-  python-docx     — MIT License    https://github.com/python-openxml/python-docx
-  packaging       — Apache 2.0     https://github.com/pypa/packaging
-  PyInstaller     — GPL v2+        https://github.com/pyinstaller/pyinstaller
+Runtime dependencies
+────────────────────
+  Ollama               — MIT          https://github.com/ollama/ollama
+  PyQt5                — GPL v3       https://www.riverbankcomputing.com/software/pyqt/
+  sentence-transformers— Apache 2.0   https://github.com/UKPLab/sentence-transformers
+  FAISS                — MIT          https://github.com/facebookresearch/faiss
+  pypdf                — BSD 3-Clause https://github.com/py-pdf/pypdf
+  python-docx          — MIT          https://github.com/python-openxml/python-docx
+  Pydantic             — MIT          https://github.com/pydantic/pydantic
+  Chainlit             — Apache 2.0   https://github.com/Chainlit/chainlit
+  Rich                 — MIT          https://github.com/Textualize/rich
+  prompt-toolkit       — BSD 3-Clause https://github.com/prompt-toolkit/python-prompt-toolkit
+  Jinja2               — BSD 3-Clause https://github.com/pallets/jinja
+  bcrypt               — Apache 2.0   https://github.com/pyca/bcrypt
+  requests             — Apache 2.0   https://github.com/psf/requests
+  packaging            — Apache 2.0   https://github.com/pypa/packaging
+
+Build tooling
+─────────────
+  PyInstaller          — GPL v2+      https://github.com/pyinstaller/pyinstaller
+  setuptools           — MIT          https://github.com/pypa/setuptools
+
+Each dependency retains its own copyright and license terms. Refer to the
+respective project repositories for full license texts.
