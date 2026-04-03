@@ -236,33 +236,33 @@ da --web
 da --web --port 8080
 
 # Shell passthrough inside the REPL
-da> !ls -la
-da> !git log --oneline -10
-da> !docker ps -a
-da> !htop
+⚡ dev-assist > ~$ !ls -la
+⚡ dev-assist > ~$ !git log --oneline -10
+⚡ dev-assist > ~$ !docker ps -a
+⚡ dev-assist > ~$ !htop
 
 # Indexing and RAG
-da> index .                    # Index current project
-da> index /path/to/project     # Index a specific path
-da> index status               # Show indexing stats
-da> index clear                # Clear the index
-da> what does the router do?   # RAG query after indexing
-da> explain the session class  # Automatic RAG fallthrough
+⚡ dev-assist > ~$ index .                    # Index current project
+⚡ dev-assist > ~$ index /path/to/project     # Index a specific path
+⚡ dev-assist > ~$ index status               # Show indexing stats
+⚡ dev-assist > ~$ index clear                # Clear the index
+⚡ dev-assist > ~$ what does the router do?   # RAG query after indexing
+⚡ dev-assist > ~$ explain the session class  # Automatic RAG fallthrough
 
 # DevOps modules
-da> audit                      # AI code audit on staged diff
-da> git push                   # AI-assisted git push with error explanation
-da> git conflict               # Show conflicts and AI resolution advice
-da> fix port 8080              # Find and kill process on port 8080
-da> tunnel                     # cloudflared tunnel management
-da> expose 3000                # Quick-expose port 3000 via tunnel
+⚡ dev-assist > ~$ audit                      # AI code audit on staged diff
+⚡ dev-assist > ~$ git push                   # AI-assisted git push with error explanation
+⚡ dev-assist > ~$ git conflict               # Show conflicts and AI resolution advice
+⚡ dev-assist > ~$ fix port 8080              # Find and kill process on port 8080
+⚡ dev-assist > ~$ tunnel                     # cloudflared tunnel management
+⚡ dev-assist > ~$ expose 3000                # Quick-expose port 3000 via tunnel
 
 # Session management
-da> status                     # AI engine, model, session info
-da> history                    # Show conversation history
-da> history clear              # Clear conversation history
-da> model                      # Switch AI model interactively
-da> help                       # Full command reference
+⚡ dev-assist > ~$ status                     # AI engine, model, session info
+⚡ dev-assist > ~$ history                    # Show conversation history
+⚡ dev-assist > ~$ history clear              # Clear conversation history
+⚡ dev-assist > ~$ model                      # Switch AI model interactively
+⚡ dev-assist > ~$ help                       # Full command reference
 ```
 
 ### Architecture
