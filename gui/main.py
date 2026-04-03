@@ -9,6 +9,7 @@ Clean architecture:
   crew_dialogs.py   — Crew config UI
   main.py           — This file: GUI only
 """
+import _syspath_patch  # noqa: F401 — must be first, injects system site-packages into frozen binary
 import base64
 import copy
 import glob

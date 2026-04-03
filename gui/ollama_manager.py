@@ -8,6 +8,7 @@ Architecture:
   • UI state changes only happen on the main thread via pyqtSignal
   • Auth, server, and install states are fully independent
 """
+import _syspath_patch  # noqa: F401 — must be first, injects system site-packages into frozen binary
 import json
 import os
 import re

@@ -183,12 +183,14 @@ rm -rf "$GUI_DIR/build" \
 
 # ─── Hidden imports shared by both binaries ───────────────────────────────
 #
-# PyInstaller only traces static imports. Lazy imports (inside functions)
-# and dynamic plugin loading are invisible to it — we must list them here.
+# Only bundle what PyInstaller cannot trace statically AND is small enough
+# to include. Heavy ML libs (torch, sentence_transformers, faiss, sklearn,
+# scipy) are intentionally EXCLUDED — they are loaded at runtime from the
+# system/user Python environment (pip install -r gui/requirements.txt).
+# Bundling them inflates the binary by ~2.5 GB for no benefit on a system
+# that already has them installed.
 #
-#   faiss          — lazy import in rag_engine.py
-#   numpy          — used by faiss and sentence_transformers
-#   sentence_transformers — lazy import in rag_engine.py
+#   numpy          — small, used directly by faiss/torch at import time
 #   pypdf          — lazy import in rag_engine.py (_extract_text)
 #   docx           — lazy import in rag_engine.py (_extract_text)
 #   requests       — runtime HTTP calls (ollama_client.py, ollama_manager.py)
@@ -196,9 +198,11 @@ rm -rf "$GUI_DIR/build" \
 #   pty, select, tty, termios — used by ollama_manager.py (sudo pty auth)
 #   threading, tempfile, shutil — standard lib, explicit for safety
 #
+# Hidden imports: lazy imports PyInstaller cannot trace statically
 HIDDEN="
-    --hidden-import faiss
+    --hidden-import _syspath_patch
     --hidden-import numpy
+    --hidden-import faiss
     --hidden-import sentence_transformers
     --hidden-import sentence_transformers.models
     --hidden-import sentence_transformers.losses
@@ -217,6 +221,26 @@ HIDDEN="
     --hidden-import shutil
 "
 
+# Excluded: torch and heavy CUDA/ML stack — these alone account for ~2.5 GB.
+# faiss + sentence_transformers are bundled above (small without torch).
+# torch is a runtime dep of sentence_transformers but loads lazily — if the
+# user has torch installed it will be found via _syspath_patch at runtime.
+EXCLUDED="
+    --exclude-module torch
+    --exclude-module torchvision
+    --exclude-module torchaudio
+    --exclude-module triton
+    --exclude-module sklearn
+    --exclude-module scipy
+    --exclude-module nltk
+    --exclude-module nvidia
+    --exclude-module tensorflow
+    --exclude-module tensorboard
+    --exclude-module pytest
+    --exclude-module tkinter
+    --exclude-module _tkinter
+"
+
 # ─── Build GUI (main.py) ──────────────────────────────────────────────────
 cd "$GUI_DIR"
 
@@ -229,6 +253,7 @@ echo "Building main GUI..."
     --name Ollama-ai-gui \
     --clean \
     $HIDDEN \
+    $EXCLUDED \
     main.py
 
 # ─── Build Manager (ollama_manager.py) ────────────────────────────────────
@@ -241,6 +266,7 @@ echo "Building model manager..."
     --name Ollama-ai-manager \
     --clean \
     $HIDDEN \
+    $EXCLUDED \
     ollama_manager.py
 
 # ─── Move Binaries To Project Root ────────────────────────────────────────

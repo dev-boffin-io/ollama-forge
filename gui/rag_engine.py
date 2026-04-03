@@ -17,6 +17,20 @@ import re
 _PERSIST = os.path.join(os.path.expanduser("~"), ".ollama_gui", "rag")
 
 
+def _import_faiss():
+    """Import faiss with a helpful error if not installed."""
+    try:
+        import faiss
+        return faiss
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "faiss is not installed.\n"
+            "Install it with:  pip install faiss-cpu\n"
+            "Then restart the application."
+        )
+
+
+
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
 # ------------------------------------------------------------------ #
@@ -174,7 +188,7 @@ class RAGIndex:
     def _load(self):
         if os.path.exists(self.META_FILE) and os.path.exists(self.INDEX_FILE):
             try:
-                import faiss
+                faiss = _import_faiss()
                 with open(self.META_FILE, encoding="utf-8") as f:
                     self._chunks = json.load(f)
                 self._index = faiss.read_index(self.INDEX_FILE)
@@ -185,7 +199,7 @@ class RAGIndex:
         self._chunks = []
 
     def _save(self):
-        import faiss
+        faiss = _import_faiss()
         faiss.write_index(self._index, self.INDEX_FILE)
         with open(self.META_FILE, "w", encoding="utf-8") as f:
             json.dump(self._chunks, f, ensure_ascii=False)
@@ -205,7 +219,8 @@ class RAGIndex:
         stop_cb() → bool        — return True to abort gracefully
         Returns number of NEW chunks added.
         """
-        import faiss, numpy as np
+        faiss = _import_faiss()
+        import numpy as np
 
         def _stopped():
             return stop_cb is not None and stop_cb()
@@ -302,7 +317,8 @@ class RAGIndex:
     def remove_source(self, source: str) -> int:
         """Remove all chunks from a given source filename. Returns removed count."""
         # FAISS flat index doesn't support remove — rebuild without those chunks
-        import faiss, numpy as np
+        faiss = _import_faiss()
+        import numpy as np
         before = len(self._chunks)
         keep = [c for c in self._chunks if c["source"] != source]
         removed = before - len(keep)
