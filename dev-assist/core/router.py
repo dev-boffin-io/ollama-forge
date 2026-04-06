@@ -317,7 +317,6 @@ def _show_help() -> None:
         help_text = """\
 [bold cyan]RAG / Code Analysis:[/bold cyan]
   index /path/to/project   →  index a local folder
-  index .                  →  index current directory
   index status             →  show indexed files
   index clear              →  clear the index
   <any question>           →  ask AI about indexed code
@@ -371,7 +370,7 @@ def _show_help() -> None:
 ┌──────────────────────────────────────────────┐
 │           dev-assist — Commands              │
 ├──────────────────────────────────────────────┤
-│  index /path    index .    index status      │
+│  index /path    index status                 │
 │  audit          fix port N  tunnel [port]    │
 │  git push fix   git conflict                 │
 │  rename  clean  clean --dry-run              │

@@ -10,7 +10,6 @@ Improvements over v1:
 
 Usage (REPL):
   index /path/to/your/project
-  index .
   index status
   index clear
 """
@@ -74,6 +73,10 @@ def run(text: str = "") -> None:
     else:
         path = _extract_path(text)
         if path:
+            if __import__('os').path.abspath(path) == __import__('os').getcwd():
+                print("\u26a0\ufe0f  Indexing the current directory (.) is disabled.\n"
+                      "   Please provide an explicit path, e.g.  index /home/user/my-project")
+                return
             index_folder(path)
         else:
             _show_usage()
@@ -370,7 +373,6 @@ def _show_usage() -> None:
     _print("""
 📁 Indexer — usage:
   index /path/to/project    ← index a folder
-  index .                   ← index current directory
   index status              ← show what's indexed
   index clear               ← wipe the index
 """)

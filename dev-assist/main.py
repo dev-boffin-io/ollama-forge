@@ -301,7 +301,7 @@ def _build_prompt_fn():
         from prompt_toolkit.completion import WordCompleter
 
         COMPLETIONS = [
-            "index", "index .", "index status", "index clear",
+            "index", "index status", "index clear",
             "audit", "help", "status", "plugins", "exit", "quit",
             "model", "model list", "model set", "model engine ollama", "model engine api",
             "ollama on", "ollama off", "ollama status",
@@ -332,7 +332,7 @@ def _build_prompt_fn():
         import readline
 
         COMMANDS = [
-            "index", "index .", "index status", "index clear",
+            "index", "index status", "index clear",
             "audit", "help", "status", "plugins", "exit", "quit",
             "model", "model list", "model set",
             "ollama on", "ollama off", "ollama status",
