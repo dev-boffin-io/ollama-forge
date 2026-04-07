@@ -6,7 +6,8 @@ Features:
   - Per-session chat history (in-memory)
   - Per-session model settings
   - File upload → AI reads and answers
-  - clear / history / help commands
+  - Ollama start/stop and status via action buttons + commands
+  - clear / history / help / ollama on|off|status commands
 """
 
 from __future__ import annotations
@@ -69,6 +70,70 @@ def _get_ollama_models() -> list[str]:
         return names or ["qwen2.5-coder:7b", "llama3.2:3b"]
     except Exception:
         return ["qwen2.5-coder:7b", "llama3.2:3b", "codellama:7b", "mistral:7b"]
+
+# ---------------------------------------------------------------------------
+# Ollama status / control  (delegates to core.ollama_status)
+# ---------------------------------------------------------------------------
+
+def _ollama_status() -> str:
+    """Return 'running' | 'stopped' | 'not_installed'."""
+    try:
+        from core.ollama_status import get_status
+        return get_status()
+    except Exception:
+        return "unknown"
+
+
+def _ollama_status_line() -> str:
+    status = _ollama_status()
+    if status == "running":
+        return "🟢 ollama **running**"
+    elif status == "stopped":
+        return "🔴 ollama **stopped**"
+    elif status == "not_installed":
+        return "⚫ ollama **not installed**"
+    return "❓ ollama **unknown**"
+
+
+async def _ollama_start() -> str:
+    try:
+        from core.ollama_status import start_ollama
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, start_ollama)
+    except Exception as exc:
+        return f"❌ Error: {exc}"
+
+
+async def _ollama_stop() -> str:
+    try:
+        from core.ollama_status import stop_ollama
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, stop_ollama)
+    except Exception as exc:
+        return f"❌ Error: {exc}"
+
+
+async def _send_ollama_status_msg() -> None:
+    """Send current ollama status with on/off action buttons."""
+    status = _ollama_status()
+    line   = _ollama_status_line()
+
+    if status == "running":
+        actions = [
+            cl.Action(name="ollama_stop",   payload={"action": "stop"},   label="⏹  Stop ollama"),
+            cl.Action(name="ollama_status", payload={"action": "status"}, label="🔄  Refresh status"),
+        ]
+    elif status == "stopped":
+        actions = [
+            cl.Action(name="ollama_start",  payload={"action": "start"},  label="▶  Start ollama"),
+            cl.Action(name="ollama_status", payload={"action": "status"}, label="🔄  Refresh status"),
+        ]
+    else:
+        actions = [
+            cl.Action(name="ollama_status", payload={"action": "status"}, label="🔄  Refresh status"),
+        ]
+
+    await cl.Message(content=line, actions=actions, author="ollama").send()
 
 # ---------------------------------------------------------------------------
 # In-memory chat history (per session)
@@ -192,8 +257,11 @@ async def on_start():
 🤖 `{engine}/{active_model}`
 
 ---
-📎 Attach files · `clear` clear history · `history` view recent chat · `help` show commands
+📎 Attach files · `clear` · `history` · `ollama on/off/status` · `help`
 """).send()
+
+    # Show ollama status with action buttons
+    await _send_ollama_status_msg()
 
 
 @cl.on_settings_update
@@ -202,6 +270,27 @@ async def on_settings_update(settings: dict):
     engine = settings.get("engine", "ollama")
     model  = settings.get("ollama_model", "qwen2.5-coder:7b")
     await cl.Message(content=f"✅ Model updated → `{engine}/{model}`").send()
+
+
+@cl.action_callback("ollama_start")
+async def on_ollama_start(action: cl.Action):
+    await cl.Message(content="⏳ Starting ollama…", author="ollama").send()
+    result = await _ollama_start()
+    await cl.Message(content=result, author="ollama").send()
+    await _send_ollama_status_msg()
+
+
+@cl.action_callback("ollama_stop")
+async def on_ollama_stop(action: cl.Action):
+    await cl.Message(content="⏳ Stopping ollama…", author="ollama").send()
+    result = await _ollama_stop()
+    await cl.Message(content=result, author="ollama").send()
+    await _send_ollama_status_msg()
+
+
+@cl.action_callback("ollama_status")
+async def on_ollama_status(action: cl.Action):
+    await _send_ollama_status_msg()
 
 
 @cl.on_message
@@ -232,8 +321,30 @@ async def on_message(message: cl.Message):
         await cl.Message(content="""### Commands
 - `clear` — clear chat history
 - `history` — show recent messages
+- `ollama on` — start ollama serve
+- `ollama off` — stop ollama serve
+- `ollama status` — show ollama status
 - `help` — show this help
 """).send()
+        return
+
+    # ── Ollama control commands ────────────────────────────────────────────
+    if cmd in ("ollama on", "ollama start"):
+        await cl.Message(content="⏳ Starting ollama…", author="ollama").send()
+        result = await _ollama_start()
+        await cl.Message(content=result, author="ollama").send()
+        await _send_ollama_status_msg()
+        return
+
+    if cmd in ("ollama off", "ollama stop"):
+        await cl.Message(content="⏳ Stopping ollama…", author="ollama").send()
+        result = await _ollama_stop()
+        await cl.Message(content=result, author="ollama").send()
+        await _send_ollama_status_msg()
+        return
+
+    if cmd in ("ollama status", "ollama"):
+        await _send_ollama_status_msg()
         return
 
     # ── File upload ────────────────────────────────────────────────────────
