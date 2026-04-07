@@ -10,9 +10,6 @@ ollama                        # local AI — recommended
 # ── Config validation (strongly recommended) ─────────────────────────────────
 pydantic>=2.0
 
-# ── Security (required for web UI) ───────────────────────────────────────────
-bcrypt>=4.0                   # password hashing — REQUIRED for web_chat.py
-
 # ── Better terminal UI (recommended) ─────────────────────────────────────────
 rich>=13.0
 prompt-toolkit>=3.0
