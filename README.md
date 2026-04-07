@@ -473,11 +473,13 @@ The session provides:
 
 ### Web UI (Chainlit)
 
-`web_chat.py` implements the Chainlit web interface (`da --web`) with full async streaming:
+`web_chat.py` implements the Chainlit web interface (`da --web`) with full async streaming. Access is **open by default — no login or registration required**.
 
 - All AI responses stream token-by-token using async generators from `core/ai.ask_ai_streaming`.
 - RAG queries use `core/rag_engine.ask_with_context_async`, which yields tokens to the browser and saves the full response to session history on completion.
 - File uploads (documents for RAG indexing) are accepted inline in the chat.
+- Per-session chat history and model settings are maintained in-memory for the duration of the browser session.
+- Ollama start/stop and status are available via action buttons or inline commands (`ollama on`, `ollama off`, `ollama status`).
 - **Localisation:** Bengali translation included (`dev-assist/.chainlit/translations/bn.json`) alongside 15+ other locales (Arabic, Chinese Simplified/Traditional, French, German, Hindi, Japanese, Korean, Tamil, Telugu, and more).
 
 The web UI exposes the identical functionality as the terminal REPL — the same router, modules, AI engine, and session management — accessed through a browser.
@@ -517,13 +519,6 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 | `DEV_ASSIST_API_KEY` | — | API key for Groq/OpenAI backend (never stored in settings.json) |
 | `DEV_ASSIST_DATA_DIR` | `~/.config/dev-assist` | Vector store and session persistence directory |
 | `DEV_ASSIST_CONFIG_DIR` | Repo-relative `config/` | Settings file directory (auto-set in frozen binary by runtime hook) |
-| `SMTP_HOST` | — | SMTP server hostname for web UI email OTP |
-| `SMTP_PORT` | `587` | SMTP port |
-| `SMTP_USER` | — | SMTP username / email address |
-| `SMTP_PASS` | — | SMTP password or app password |
-| `SMTP_FROM` | — | Sender display name and address |
-
-Copy `dev-assist/.env.example` to `dev-assist/.env`, fill in your values, and `source dev-assist/.env` (or add to your shell profile).
 
 ### Dependencies
 
@@ -531,7 +526,6 @@ Copy `dev-assist/.env.example` to `dev-assist/.env`, fill in your values, and `s
 |---------|------|
 | `ollama` | Local AI inference SDK |
 | `pydantic >= 2.0` | Config validation and type safety |
-| `bcrypt >= 4.0` | Password hashing for web UI authentication |
 | `rich >= 13.0` | Terminal formatting — panels, tables, progress bars |
 | `prompt-toolkit >= 3.0` | REPL readline, persistent history, completions |
 | `jinja2 >= 3.1` | Prompt template rendering |
