@@ -478,7 +478,6 @@ The session provides:
 - All AI responses stream token-by-token using async generators from `core/ai.ask_ai_streaming`.
 - RAG queries use `core/rag_engine.ask_with_context_async`, which yields tokens to the browser and saves the full response to session history on completion.
 - File uploads (documents for RAG indexing) are accepted inline in the chat.
-- **Authentication:** bcrypt-hashed password login using Chainlit's auth hook callbacks. Password recovery via SMTP email OTP, configurable via `SMTP_*` environment variables (see `.env.example` for Gmail, SendGrid, Mailgun, and Outlook examples).
 - **Localisation:** Bengali translation included (`dev-assist/.chainlit/translations/bn.json`) alongside 15+ other locales (Arabic, Chinese Simplified/Traditional, French, German, Hindi, Japanese, Korean, Tamil, Telugu, and more).
 
 The web UI exposes the identical functionality as the terminal REPL — the same router, modules, AI engine, and session management — accessed through a browser.
