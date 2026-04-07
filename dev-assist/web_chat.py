@@ -64,12 +64,64 @@ def _load_global_config() -> dict:
 
 
 def _get_ollama_models() -> list[str]:
+    """
+    Return installed model names by querying the running ollama binary/API.
+    Returns an empty list if ollama is stopped or not installed — no hardcoded fallback.
+    """
+    if _ollama_status() != "running":
+        return []
     try:
         import ollama
         names = [m.model for m in ollama.list().models]
-        return names or ["qwen2.5-coder:7b", "llama3.2:3b"]
+        return names
     except Exception:
-        return ["qwen2.5-coder:7b", "llama3.2:3b", "codellama:7b", "mistral:7b"]
+        # Fallback: call 'ollama list' subprocess directly (works when frozen too)
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().splitlines()
+                # Skip header line ("NAME   ID   SIZE   MODIFIED")
+                names = []
+                for line in lines[1:]:
+                    parts = line.split()
+                    if parts:
+                        names.append(parts[0])
+                return names
+        except Exception:
+            pass
+        return []
+
+
+async def _reload_model_settings() -> None:
+    """
+    Re-build ChatSettings with a fresh model list from the running ollama.
+    Called after ollama is started so the dropdown fills automatically.
+    """
+    global_cfg   = _load_global_config()
+    engine       = (cl.user_session.get("settings") or {}).get("engine") or global_cfg.get("ai_engine", "ollama")
+    models       = _get_ollama_models()
+    saved_model  = (cl.user_session.get("settings") or {}).get("ollama_model") or global_cfg.get("ollama_model", "")
+
+    if models:
+        initial_model = saved_model if saved_model in models else models[0]
+        model_values  = models
+    else:
+        # Ollama stopped — show a placeholder; user cannot pick a real model
+        initial_model = "⚠ ollama stopped — no models"
+        model_values  = [initial_model]
+
+    settings = await cl.ChatSettings([
+        Select(id="engine", label="AI Engine",
+               values=["ollama", "api"], initial_value=engine),
+        Select(id="ollama_model", label="Ollama Model",
+               values=model_values,
+               initial_value=initial_model),
+    ]).send()
+    cl.user_session.set("settings", settings)
 
 # ---------------------------------------------------------------------------
 # Ollama status / control  (delegates to core.ollama_status)
@@ -173,9 +225,17 @@ async def _stream_response(user_text: str, file_context: str = ""):
     msgs.append({"role": "user", "content": full_q})
 
     if engine == "ollama":
+        # Guard: refuse to call if ollama is not running
+        if _ollama_status() != "running":
+            yield "⚠️ Ollama is stopped. Start it with `ollama on` or the **▶ Start ollama** button, then try again."
+            return
         try:
             import ollama
             model = settings.get("ollama_model") or _get_ollama_model(cfg)
+            # Guard: block placeholder value written when ollama was stopped
+            if not model or model.startswith("⚠"):
+                yield "⚠️ No valid model selected. Start ollama and pick a model from the settings panel."
+                return
             token_queue: queue.Queue = queue.Queue()
 
             def _producer() -> None:
@@ -237,21 +297,30 @@ async def _stream_response(user_text: str, file_context: str = ""):
 async def on_start():
     _clear_history()
 
-    global_cfg    = _load_global_config()
-    engine        = global_cfg.get("ai_engine", "ollama")
-    ollama_model  = global_cfg.get("ollama_model", "qwen2.5-coder:7b")
-    ollama_models = _get_ollama_models()
+    global_cfg   = _load_global_config()
+    engine       = global_cfg.get("ai_engine", "ollama")
+    saved_model  = global_cfg.get("ollama_model", "")
+    models       = _get_ollama_models()  # empty [] when ollama is stopped
+
+    if models:
+        initial_model = saved_model if saved_model in models else models[0]
+        model_values  = models
+        active_model  = initial_model if engine == "ollama" else "api"
+    else:
+        # Ollama is not running — show placeholder, block real model selection
+        initial_model = "⚠ ollama stopped — no models"
+        model_values  = [initial_model]
+        active_model  = "⚠ ollama stopped" if engine == "ollama" else "api"
 
     settings = await cl.ChatSettings([
         Select(id="engine", label="AI Engine",
                values=["ollama", "api"], initial_value=engine),
         Select(id="ollama_model", label="Ollama Model",
-               values=ollama_models,
-               initial_value=ollama_model if ollama_model in ollama_models else ollama_models[0]),
+               values=model_values,
+               initial_value=initial_model),
     ]).send()
     cl.user_session.set("settings", settings)
 
-    active_model = ollama_model if engine == "ollama" else "api"
     await cl.Message(content=f"""## dev-assist
 
 🤖 `{engine}/{active_model}`
@@ -268,7 +337,11 @@ async def on_start():
 async def on_settings_update(settings: dict):
     cl.user_session.set("settings", settings)
     engine = settings.get("engine", "ollama")
-    model  = settings.get("ollama_model", "qwen2.5-coder:7b")
+    model  = settings.get("ollama_model", "")
+    # Ignore the placeholder value written when ollama is stopped
+    if model.startswith("⚠"):
+        await cl.Message(content="⚠️ Ollama is stopped. Start it first with `ollama on`, then reload the settings.").send()
+        return
     await cl.Message(content=f"✅ Model updated → `{engine}/{model}`").send()
 
 
@@ -278,6 +351,10 @@ async def on_ollama_start(action: cl.Action):
     result = await _ollama_start()
     await cl.Message(content=result, author="ollama").send()
     await _send_ollama_status_msg()
+    # Reload model dropdown so real models appear after start
+    if _ollama_status() == "running":
+        await _reload_model_settings()
+        await cl.Message(content="🔄 Model list reloaded — select your model from settings.").send()
 
 
 @cl.action_callback("ollama_stop")
@@ -334,6 +411,9 @@ async def on_message(message: cl.Message):
         result = await _ollama_start()
         await cl.Message(content=result, author="ollama").send()
         await _send_ollama_status_msg()
+        if _ollama_status() == "running":
+            await _reload_model_settings()
+            await cl.Message(content="🔄 Model list reloaded — select your model from settings.").send()
         return
 
     if cmd in ("ollama off", "ollama stop"):
