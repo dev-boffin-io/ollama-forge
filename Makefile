@@ -45,7 +45,7 @@ INSTALL_BIN   := /usr/local/bin
 
 PROJECT_DIR   := $(shell pwd)
 ICON_SRC      := $(PROJECT_DIR)/ollama-forge.png
-ICON_DIR      := $(HOME)/.local/share/icons/hicolor/1024x1024/apps
+ICON_DIR      := $(HOME)/.local/share/icons/hicolor/512x512/apps
 ICON_DEST     := $(ICON_DIR)/ollama-forge.png
 DESKTOP_DIR   := $(HOME)/.local/share/applications
 DESKTOP_FILE  := $(DESKTOP_DIR)/ollama-forge.desktop
@@ -206,7 +206,7 @@ format:  ## Auto-format with black + isort
 clean:  ## Remove all build artefacts, venvs, and output binaries
 	@echo -e "$(YELLOW)[!]$(NC) Cleaning build artefacts..."
 
-	# Remove PyInstaller build/dist directories
+	@# Remove PyInstaller build/dist directories
 	@rm -rf \
 		$(DEV_ASSIST)/build  \
 		$(DEV_ASSIST)/dist   \
@@ -214,22 +214,22 @@ clean:  ## Remove all build artefacts, venvs, and output binaries
 		$(GUI_DIR)/dist      \
 		build/ dist/
 
-	# Remove isolated build venvs
+	@# Remove isolated build venvs
 	@rm -rf \
 		$(BUILDER)/.venv-build-main  \
 		$(BUILDER)/.venv-build       \
 		$(DEV_ASSIST)/.venv
 
-	# Remove output binaries
+	@# Remove output binaries
 	@rm -f $(BIN_MAIN) $(BIN_GUI) $(BIN_MGR) $(BIN_DA)
 
-	# Remove Python caches and PyInstaller spec files
+	@# Remove Python caches and PyInstaller spec files
 	@find . \
 		-not -path './.git/*' \
 		\( -name "__pycache__" -o -name "*.pyc" -o -name "*.pyo" -o -name "*.spec" \) \
 		-exec rm -rf {} + 2>/dev/null || true
 
-	# Remove pytest / coverage artefacts
+	@# Remove pytest / coverage artefacts
 	@rm -rf .pytest_cache htmlcov .coverage .coverage.*
 
 	@echo -e "$(GREEN)[✓]$(NC) Clean complete"
