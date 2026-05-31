@@ -20,20 +20,21 @@ import sys
 import threading
 import time
 
-from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer
+from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
 from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QProgressBar,
+    QPushButton, QTextEdit, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from database import DB_CLASS
 from ollama_client import OllamaClient
 from workers import DirectChatWorker, CrewChatWorker, RAGBuildWorker, GroqChatWorker
 from groq_client import GroqClient
+from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
 
 
@@ -71,6 +72,11 @@ class OllamaGUI(QMainWindow):
         # ── API mode (Groq) ──────────────────────────────────────────
         self.api_mode     = False
         self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+
+        # ── Chat rendering ───────────────────────────────────────────
+        self._chat_log:    list[dict] = []   # {type, content, label?}
+        self._code_store:  list[str]  = []   # code blocks for copy
+        self._is_streaming = False
 
         # Ollama server state
         self._server_running = False
@@ -284,10 +290,12 @@ class OllamaGUI(QMainWindow):
         self.groq_row.setVisible(False)
         v.addWidget(self.groq_row)
 
-        # Chat display — QPlainTextEdit is faster than QTextEdit for plain text
-        self.chat = QPlainTextEdit()
+        # Chat display — QTextBrowser renders HTML (markdown, code blocks, tables)
+        self.chat = QTextBrowser()
         self.chat.setReadOnly(True)
+        self.chat.setOpenLinks(False)
         self.chat.setFont(QFont("DejaVu Sans", 32))
+        self.chat.anchorClicked.connect(self._on_anchor_clicked)
         v.addWidget(self.chat, 1)
 
         # Input row
@@ -321,7 +329,7 @@ class OllamaGUI(QMainWindow):
 
         clr_btn = QPushButton("Clear")
         clr_btn.setMinimumHeight(70)
-        clr_btn.clicked.connect(self.chat.clear)
+        clr_btn.clicked.connect(self._clear_chat_display)
         act.addWidget(clr_btn)
 
         exp_btn = QPushButton("Export")
@@ -353,14 +361,14 @@ class OllamaGUI(QMainWindow):
             QListWidget  {{ font-size: {self._FONT_UI}px; border-radius: 8px; }}
             QListWidget::item {{ padding: 16px 10px; border-radius: 6px;
                                 margin: 2px 4px; }}
-            QPlainTextEdit, QTextEdit {{ font-size: {self._FONT_CHAT}px;
+            QTextBrowser, QTextEdit {{ font-size: {self._FONT_CHAT}px;
                                         border-radius: 8px; }}
             QProgressBar {{ border-radius: 6px; min-height: 20px; }}
         """
         if self.dark:
             self.setStyleSheet(base + """
                 QMainWindow, QWidget { background: #121212; color: #e0e0e0; }
-                QPlainTextEdit, QTextEdit { background: #1e1e1e; color: #f0f0f0;
+                QTextBrowser, QTextEdit { background: #1e1e1e; color: #f0f0f0;
                     border: none; }
                 QListWidget { background: #181818; color: #ddd; border: none;
                     padding: 4px; }
@@ -395,7 +403,7 @@ class OllamaGUI(QMainWindow):
         else:
             self.setStyleSheet(base + f"""
                 QMainWindow, QWidget {{ background: #f0f2f5; color: #1a1a2e; }}
-                QPlainTextEdit, QTextEdit {{ background: #ffffff; color: #1a1a2e;
+                QTextBrowser, QTextEdit {{ background: #ffffff; color: #1a1a2e;
                     border: 1px solid #c8cdd4; }}
                 QListWidget {{ background: #ffffff; color: #1a1a2e;
                     border: 1px solid #d0d5dd; padding: 4px; }}
@@ -433,6 +441,8 @@ class OllamaGUI(QMainWindow):
         self._apply_theme()
         self.chat.setFont(QFont("DejaVu Sans", self._FONT_CHAT))
         self.input.setFont(QFont("DejaVu Sans", self._FONT_INPUT))
+        # Re-render chat with new theme colors
+        self._render_chat()
 
     # ================================================================ #
     #  MODELS                                                            #
@@ -537,17 +547,25 @@ class OllamaGUI(QMainWindow):
     def _new_chat(self):
         self.current_conv_id = None
         self.last_prompt = ""
+        self._chat_log = []
+        self._code_store = []
+        self._is_streaming = False
         self.chat.clear()
         self._update_stop_btn(False)
 
     def _load_conversation(self, item):
         self.current_conv_id = item.data(Qt.UserRole)
-        self.chat.clear()
+        self._chat_log = []
+        self._code_store = []
+        self._is_streaming = False
         with QMutexLocker(self.db_mutex):
             msgs = self.db.get_messages(self.current_conv_id)
         for m in msgs:
-            who = "🧑 YOU" if m["role"] == "user" else "🤖 AI"
-            self._log(f"{who}:\n{m['content']}\n")
+            if m["role"] == "user":
+                self._chat_log.append({'type': 'user', 'content': m['content']})
+            else:
+                self._chat_log.append({'type': 'ai', 'content': m['content'], 'label': '🤖 AI'})
+        self._render_chat()
         if msgs and msgs[-1]["role"] == "user":
             self.last_prompt = msgs[-1]["content"]
         self._update_stop_btn(False)
@@ -884,12 +902,16 @@ class OllamaGUI(QMainWindow):
         with QMutexLocker(self.db_mutex):
             self.db.add_message(self.current_conv_id, "user", prompt)
 
-        self._log(f"\n🧑 YOU:\n{prompt}\n")
+        # Add user message bubble to chat
+        self._add_user_msg(prompt)
+
         mode_tag = (
             f" (Crew: {len(self.current_crew_cfg)} agents)"
             if self.crew_mode and self.current_crew_cfg else ""
         )
-        self._log(f"🤖 AI{mode_tag}:\n")
+        # Start AI message bubble (empty, will fill during streaming)
+        ai_label = f"🤖 AI{mode_tag}"
+        self._start_ai_msg(ai_label)
         self._update_stop_btn(True)
 
         # Build history (exclude the just-added user message — we'll add it below)
@@ -966,6 +988,11 @@ class OllamaGUI(QMainWindow):
         QTimer.singleShot(600_000, lambda: self.thread and self.thread.stop())
 
     def _append_token(self, text: str):
+        """Fast path: accumulate token in last AI message, append plain text to display."""
+        # Update the in-memory chat_log
+        if self._chat_log and self._chat_log[-1]['type'] == 'ai':
+            self._chat_log[-1]['content'] += text
+        # Append plain text to display (fast — no full re-render during streaming)
         cursor = self.chat.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
@@ -982,16 +1009,24 @@ class OllamaGUI(QMainWindow):
                 self.db.add_message(
                     self.current_conv_id, "assistant", response
                 )
+            # Finalize the last AI message content
+            if self._chat_log and self._chat_log[-1]['type'] == 'ai':
+                self._chat_log[-1]['content'] = response
+
         if elapsed > 0 and chunks:
             speed = len(response) / elapsed
-            self._log(
-                f"\n📊 {len(response)} chars | {speed:.0f} ch/s | {elapsed:.1f}s\n"
-            )
+            self._add_status(f"📊 {len(response)} chars | {speed:.0f} ch/s | {elapsed:.1f}s")
+
+        self._is_streaming = False
+        # Full markdown render now that we have the complete response
+        self._render_chat()
         self._update_stop_btn(False)
         self._cleanup_thread()
 
     def _on_error(self, err: str):
-        self._log(f"\n❌ Error: {err}\n")
+        self._is_streaming = False
+        self._log(f"❌ Error: {err}")
+        self._render_chat()
         QMessageBox.critical(self, "Error", err)
         self._update_stop_btn(False)
         self._cleanup_thread()
@@ -999,13 +1034,15 @@ class OllamaGUI(QMainWindow):
     def _stop_or_reload(self):
         if self.thread and self.thread.isRunning():
             self.thread.stop()
-            self._log("\n⚠️ Stopped.\n")
+            self._is_streaming = False
+            self._log("⚠️ Stopped.")
+            self._render_chat()
             self._update_stop_btn(False)
         elif self.last_prompt and self.current_conv_id:
             self.input.setPlainText(self.last_prompt)
             self._send()
         else:
-            self._log("\nℹ️ Nothing to reload.\n")
+            self._log("ℹ️ Nothing to reload.")
 
     def _update_stop_btn(self, running: bool):
         if running:
@@ -1337,13 +1374,63 @@ class OllamaGUI(QMainWindow):
     # ================================================================ #
     #  Helpers                                                           #
     # ================================================================ #
+    # ================================================================ #
+    #  CHAT DISPLAY MANAGEMENT                                          #
+    # ================================================================ #
+    def _add_user_msg(self, prompt: str):
+        """Add a user message bubble and re-render."""
+        self._chat_log.append({'type': 'user', 'content': prompt})
+        self._render_chat()
+
+    def _start_ai_msg(self, label: str = "🤖 AI"):
+        """Add an empty AI bubble (streaming will fill it)."""
+        self._is_streaming = True
+        self._chat_log.append({'type': 'ai', 'content': '', 'label': label})
+        self._render_chat()
+
+    def _add_status(self, text: str):
+        """Add a status / info line (small italic)."""
+        clean = text.strip()
+        if not clean:
+            return
+        self._chat_log.append({'type': 'status', 'content': clean})
+        if not self._is_streaming:
+            self._render_chat()
+
     def _log(self, text: str):
-        """Append text to chat display."""
-        cursor = self.chat.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(text)
-        self.chat.setTextCursor(cursor)
-        self.chat.ensureCursorVisible()
+        """Legacy helper — routes to _add_status."""
+        self._add_status(text)
+
+    def _render_chat(self):
+        """Full HTML re-render of the entire chat log."""
+        self._code_store = []
+        html = chat_html(self._chat_log, self._code_store, self.dark)
+        sb = self.chat.verticalScrollBar()
+        at_bottom = sb.value() >= sb.maximum() - 40
+        self.chat.setHtml(html)
+        if at_bottom or self._is_streaming:
+            self.chat.verticalScrollBar().setValue(
+                self.chat.verticalScrollBar().maximum()
+            )
+
+    def _on_anchor_clicked(self, url: QUrl):
+        """Handle copy:N anchor clicks from code block copy buttons."""
+        s = url.toString()
+        if s.startswith('copy:'):
+            try:
+                idx = int(s[5:])
+                if 0 <= idx < len(self._code_store):
+                    QApplication.clipboard().setText(self._code_store[idx])
+                    self._add_status("📋 Code copied to clipboard!")
+            except ValueError:
+                pass
+
+    def _clear_chat_display(self):
+        """Clear visible chat while keeping conversation in DB."""
+        self._chat_log = []
+        self._code_store = []
+        self._is_streaming = False
+        self.chat.clear()
 
     # Ctrl+Enter sends
     def keyPressEvent(self, event):
