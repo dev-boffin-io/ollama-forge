@@ -32,7 +32,8 @@ from PyQt5.QtWidgets import (
 
 from database import DB_CLASS
 from ollama_client import OllamaClient
-from workers import DirectChatWorker, CrewChatWorker, RAGBuildWorker
+from workers import DirectChatWorker, CrewChatWorker, RAGBuildWorker, GroqChatWorker
+from groq_client import GroqClient
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
 
 
@@ -66,6 +67,10 @@ class OllamaGUI(QMainWindow):
 
         self.attached_path   = None
         self.attached_b64    = None
+
+        # ── API mode (Groq) ──────────────────────────────────────────
+        self.api_mode     = False
+        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
 
         # Ollama server state
         self._server_running = False
@@ -243,6 +248,14 @@ class OllamaGUI(QMainWindow):
         self.theme_btn.clicked.connect(self._toggle_theme)
         top.addWidget(self.theme_btn)
 
+        # ── Local / Groq API toggle ──────────────────────────────────
+        self.api_toggle_btn = QPushButton("🖥️ Local")
+        self.api_toggle_btn.setObjectName("apiToggleBtn")
+        self.api_toggle_btn.setMinimumHeight(60)
+        self.api_toggle_btn.setMinimumWidth(180)
+        self.api_toggle_btn.clicked.connect(self._toggle_api_mode)
+        top.addWidget(self.api_toggle_btn)
+
         self.server_btn = QPushButton("🟢 Server: ON")
         self.server_btn.setObjectName("srvBtn")
         self.server_btn.setMinimumHeight(60)
@@ -250,6 +263,26 @@ class OllamaGUI(QMainWindow):
         self.server_btn.clicked.connect(self._toggle_server)
         top.addWidget(self.server_btn)
         v.addLayout(top)
+
+        # ── Groq API key row (hidden by default) ─────────────────────
+        self.groq_row = QWidget()
+        groq_layout = QHBoxLayout(self.groq_row)
+        groq_layout.setContentsMargins(0, 4, 0, 4)
+        groq_layout.addWidget(QLabel("🔑 Groq API Key:"))
+        self.groq_key_input = QLineEdit()
+        self.groq_key_input.setPlaceholderText("gsk_… (paste your Groq API key)")
+        self.groq_key_input.setEchoMode(QLineEdit.Password)
+        self.groq_key_input.setMinimumHeight(56)
+        if self.groq_api_key:
+            self.groq_key_input.setText(self.groq_api_key)
+        groq_layout.addWidget(self.groq_key_input, 1)
+        self.groq_save_btn = QPushButton("✔ Apply")
+        self.groq_save_btn.setMinimumHeight(56)
+        self.groq_save_btn.setMinimumWidth(140)
+        self.groq_save_btn.clicked.connect(self._apply_groq_key)
+        groq_layout.addWidget(self.groq_save_btn)
+        self.groq_row.setVisible(False)
+        v.addWidget(self.groq_row)
 
         # Chat display — QPlainTextEdit is faster than QTextEdit for plain text
         self.chat = QPlainTextEdit()
@@ -354,6 +387,10 @@ class OllamaGUI(QMainWindow):
                 QPushButton#stopBtn[active="true"]:hover { background:#a02020; }
                 QPushButton#crewBtn { background:#2d2d2d; color:#e0e0e0; }
                 QPushButton#crewBtn[active="true"] { background:#1a7f3c; color:white; font-weight:bold; }
+                QPushButton#apiToggleBtn { background:#1a4f8f; color:white; font-weight:bold; }
+                QPushButton#apiToggleBtn:hover { background:#153b6e; }
+                QPushButton#apiToggleBtn[api="true"] { background:#7b3fa0; color:white; font-weight:bold; }
+                QPushButton#apiToggleBtn[api="true"]:hover { background:#5e2e7a; }
                         """)
         else:
             self.setStyleSheet(base + f"""
@@ -385,6 +422,10 @@ class OllamaGUI(QMainWindow):
                 QPushButton#stopBtn[active="true"]:hover {{ background:#b71c1c; }}
                 QPushButton#crewBtn {{ background:#1a73e8; color:white; }}
                 QPushButton#crewBtn[active="true"] {{ background:#1a7f3c; color:white; font-weight:bold; }}
+                QPushButton#apiToggleBtn {{ background:#1a4f8f; color:white; font-weight:bold; }}
+                QPushButton#apiToggleBtn:hover {{ background:#153b6e; }}
+                QPushButton#apiToggleBtn[api="true"] {{ background:#7b3fa0; color:white; font-weight:bold; }}
+                QPushButton#apiToggleBtn[api="true"]:hover {{ background:#5e2e7a; }}
                         """)
 
     def _toggle_theme(self):
@@ -399,6 +440,21 @@ class OllamaGUI(QMainWindow):
     def _load_models(self):
         self.models = []
         self.model_box.clear()
+
+        # ── Groq API mode ────────────────────────────────────────────
+        if self.api_mode:
+            groq = GroqClient(api_key=self.groq_api_key)
+            groq_models = groq.list_models()
+            self.models = groq_models
+            for m in groq_models:
+                self.model_box.addItem(m["name"])
+            # For RAG in API mode, keep sentence-transformers embed options
+            self.embed_box.clear()
+            self.embed_box.addItems(_EMBED_FALLBACKS)
+            self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.\n")
+            return
+
+        # ── Local Ollama mode ────────────────────────────────────────
         self.embed_box.clear()
         try:
             all_models = self._client.list_models()
@@ -873,16 +929,33 @@ class OllamaGUI(QMainWindow):
                 self._log("❌ No crew selected!\n")
                 self._update_stop_btn(False)
                 return
+            if self.api_mode and not self.groq_api_key.strip():
+                self._log("❌ Groq API key not set! Enter your key first.\n")
+                self._update_stop_btn(False)
+                return
             crew_cfg = copy.deepcopy(self.current_crew_cfg)
             if rag_ctx:
                 crew_cfg[0]["system_prompt"] = (
                     crew_cfg[0].get("system_prompt", "") + "\n\n" + sys_rag
                 ).strip()
-            self.thread = CrewChatWorker(prompt, crew_cfg, history)
-        else:
-            self.thread = DirectChatWorker(
-                self.model_box.currentText(), ollama_msgs
+            self.thread = CrewChatWorker(
+                prompt, crew_cfg, history,
+                api_key=self.groq_api_key if self.api_mode else "",
+                api_model_override=self.model_box.currentText() if self.api_mode else "",
             )
+        else:
+            if self.api_mode:
+                if not self.groq_api_key.strip():
+                    self._log("❌ Groq API key not set! Switch to API mode and enter your key.\n")
+                    self._update_stop_btn(False)
+                    return
+                self.thread = GroqChatWorker(
+                    self.model_box.currentText(), ollama_msgs, self.groq_api_key
+                )
+            else:
+                self.thread = DirectChatWorker(
+                    self.model_box.currentText(), ollama_msgs
+                )
 
         self.thread.token.connect(self._append_token)
         self.thread.finished.connect(self._on_done)
@@ -951,10 +1024,71 @@ class OllamaGUI(QMainWindow):
             self.thread = None
 
     # ================================================================ #
+    #  GROQ API TOGGLE                                                   #
+    # ================================================================ #
+    def _toggle_api_mode(self):
+        """Switch between Local Ollama and Groq API mode."""
+        self.api_mode = not self.api_mode
+
+        # Update toggle button appearance
+        self.api_toggle_btn.setProperty("api", "true" if self.api_mode else "false")
+        self.api_toggle_btn.style().unpolish(self.api_toggle_btn)
+        self.api_toggle_btn.style().polish(self.api_toggle_btn)
+
+        if self.api_mode:
+            self.api_toggle_btn.setText("☁️ Groq API")
+            self.groq_row.setVisible(True)
+            # Hide server button in API mode — not needed
+            self.server_btn.setVisible(False)
+            self._log("☁️ Switched to Groq API mode.\n")
+        else:
+            self.api_toggle_btn.setText("🖥️ Local")
+            self.groq_row.setVisible(False)
+            self.server_btn.setVisible(True)
+            self._log("🖥️ Switched to Local Ollama mode.\n")
+
+        self._load_models()
+        self._check_server_state()
+
+    def _apply_groq_key(self):
+        """Validate and save Groq API key, then reload model list."""
+        key = self.groq_key_input.text().strip()
+        if not key:
+            QMessageBox.warning(self, "Groq API Key", "Please enter your Groq API key.")
+            return
+
+        self.groq_save_btn.setEnabled(False)
+        self.groq_save_btn.setText("⏳ Checking…")
+        self._log("🔑 Validating Groq API key…\n")
+
+        # Force the UI to repaint before the blocking HTTP call
+        QApplication.processEvents()
+
+        try:
+            ok, err = GroqClient(api_key=key).validate_key()
+        except Exception as e:
+            ok, err = False, str(e)
+
+        self.groq_save_btn.setEnabled(True)
+        self.groq_save_btn.setText("✔ Apply")
+
+        if ok:
+            self.groq_api_key = key
+            self._log("✅ Groq API key valid — models reloaded.\n")
+            self._load_models()
+        else:
+            self._log(f"❌ Groq key error: {err}\n")
+            QMessageBox.critical(self, "Groq API Key Error", err)
+
+    # ================================================================ #
     #  OLLAMA SERVER TOGGLE                                              #
     # ================================================================ #
     def _check_server_state(self):
         """Check if Ollama is running and update button + UI accordingly."""
+        if self.api_mode:
+            # In API mode server state doesn't matter for chat
+            self._set_ui_server_state(True)
+            return
         running = self._client.is_running()
         self._server_running = running
         self._update_server_btn()
@@ -962,33 +1096,42 @@ class OllamaGUI(QMainWindow):
 
     def _set_ui_server_state(self, running: bool):
         """Enable/disable ALL interactive widgets based on server state."""
+        # In API mode always treat as "running" for chat widgets
+        effective = running or self.api_mode
+
         # Right panel — chat
-        self.send_btn.setEnabled(running)
-        self.stop_btn.setEnabled(running and bool(self.last_prompt))
-        self.input.setEnabled(running)
-        self.model_box.setEnabled(running)
-        self.mode_btn.setEnabled(running)
-        self.crew_btn.setEnabled(running)
-        self.attach_btn.setEnabled(running and self._current_model_vision())
-        if not running:
+        self.send_btn.setEnabled(effective)
+        self.stop_btn.setEnabled(effective and bool(self.last_prompt))
+        self.input.setEnabled(effective)
+        self.model_box.setEnabled(effective)
+        self.mode_btn.setEnabled(effective)
+        self.crew_btn.setEnabled(effective)
+        self.attach_btn.setEnabled(effective and self._current_model_vision())
+        if not effective:
             self.input.setPlaceholderText(
                 "⏸ Ollama server stopped — press [Server: OFF] to start"
             )
+        elif self.api_mode:
+            self.input.setPlaceholderText("Type your message… (Groq API — Ctrl+Enter to send)")
         else:
             self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
 
-        # Left panel — RAG (needs server for Ollama embed models)
-        self.rag_file_btn.setEnabled(running)
-        self.rag_folder_btn.setEnabled(running)
-        self.embed_box.setEnabled(running)
-        # Clear/Remove only if server running AND index exists
+        # Left panel — RAG
+        # Embedding: Ollama models (contain ':') need local server.
+        # sentence-transformers models work without Ollama → allow in API mode.
+        embed_model = self.embed_box.currentText() if self.embed_box.count() else ""
+        embed_needs_server = ":" in embed_model   # Ollama model names contain ':'
+        rag_available = running or (self.api_mode and not embed_needs_server)
+        self.rag_file_btn.setEnabled(rag_available)
+        self.rag_folder_btn.setEnabled(rag_available)
+        self.embed_box.setEnabled(rag_available)
         has_index = self._rag_has_data()
-        self.clear_rag_btn.setEnabled(running and has_index)
-        self.rm_doc_btn.setEnabled(running and has_index)
+        self.clear_rag_btn.setEnabled(rag_available and has_index)
+        self.rm_doc_btn.setEnabled(rag_available and has_index)
 
         # Left panel — Crews & manager
-        self.new_crew_btn.setEnabled(running)
-        self.tmpl_btn.setEnabled(running)
+        self.new_crew_btn.setEnabled(effective)
+        self.tmpl_btn.setEnabled(effective)
         self.mgr_btn.setEnabled(running)
 
     def _poll_server(self):
@@ -997,6 +1140,8 @@ class OllamaGUI(QMainWindow):
         Runs is_running() in a background thread so the UI never freezes.
         On state change: updates button, reloads models, toggles chat UI.
         """
+        if self.api_mode:
+            return   # no Ollama polling needed in API mode
         if self._server_poll_busy:
             return
         self._server_poll_busy = True

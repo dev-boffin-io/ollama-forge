@@ -1,7 +1,7 @@
 # Core GUI
 PyQt5>=5.15
 
-# HTTP
+# HTTP (also used for Groq API calls — no extra dep needed)
 requests>=2.28
 
 # RAG — lightweight replacements for LangChain
@@ -11,6 +11,9 @@ faiss-cpu>=1.7                 # vector search
 # Document loaders
 pypdf>=3.0                     # PDF
 python-docx>=1.0               # DOCX
+
+# Groq API — no extra package needed, uses requests directly.
+# Get a free API key at: https://console.groq.com
 
 # Optional: PostgreSQL backend
 # psycopg2-binary>=2.9
