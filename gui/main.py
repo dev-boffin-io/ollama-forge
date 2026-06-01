@@ -104,7 +104,8 @@ class OllamaGUI(QMainWindow):
         # ── Chat rendering ───────────────────────────────────────────
         self._chat_log:    list[dict] = []   # {type, content, label?}
         self._code_store:  list[str]  = []   # code blocks for copy
-        self._is_streaming = False
+        self._is_streaming     = False
+        self._streaming_ai_idx = -1           # index of the AI message being streamed
 
         # Ollama server state
         self._server_running = False
@@ -1184,10 +1185,10 @@ class OllamaGUI(QMainWindow):
         QTimer.singleShot(600_000, lambda: self.thread and self.thread.stop())
 
     def _append_token(self, text: str):
-        """Fast path: accumulate token in last AI message, append plain text to display."""
-        # Update the in-memory chat_log
-        if self._chat_log and self._chat_log[-1]['type'] == 'ai':
-            self._chat_log[-1]['content'] += text
+        """Fast path: accumulate token in the tracked AI message slot."""
+        idx = self._streaming_ai_idx
+        if 0 <= idx < len(self._chat_log):
+            self._chat_log[idx]['content'] += text
         # Append plain text to display (fast — no full re-render during streaming)
         cursor = self.chat.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -1205,18 +1206,20 @@ class OllamaGUI(QMainWindow):
                 self.db.add_message(
                     self.current_conv_id, "assistant", response
                 )
-            if self._chat_log and self._chat_log[-1]['type'] == 'ai':
-                self._chat_log[-1]['content'] = response
+            # Use tracked index — safe even if status items were appended after
+            idx = self._streaming_ai_idx
+            if 0 <= idx < len(self._chat_log):
+                self._chat_log[idx]['content'] = response
 
         if elapsed > 0 and chunks:
             speed = len(response) / elapsed
             self._add_status(f"📊 {len(response)} chars | {speed:.0f} ch/s | {elapsed:.1f}s")
 
+        self._streaming_ai_idx = -1
         self._is_streaming = False
         self._render_chat()
         self._update_stop_btn(False)
         self._cleanup_thread()
-        # Code blocks now have ▶ Run buttons — no auto-execution
 
     def _on_error(self, err: str):
         self._is_streaming = False
@@ -1578,8 +1581,9 @@ class OllamaGUI(QMainWindow):
         self._render_chat()
 
     def _start_ai_msg(self, label: str = "🤖 AI"):
-        """Add an empty AI bubble (streaming will fill it)."""
+        """Add an empty AI bubble and record its index for streaming."""
         self._is_streaming = True
+        self._streaming_ai_idx = len(self._chat_log)
         self._chat_log.append({'type': 'ai', 'content': '', 'label': label})
         self._render_chat()
 
