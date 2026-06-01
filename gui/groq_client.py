@@ -16,7 +16,17 @@ GROQ_CHAT_MODELS = [
     "mixtral-8x7b-32768",
     "gemma2-9b-it",
     "deepseek-r1-distill-llama-70b",
+    # Vision-capable models
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.2-11b-vision-preview",
+    "llama-3.2-90b-vision-preview",
 ]
+
+# Keywords used to detect vision capability from model name
+_GROQ_VISION_KEYWORDS = (
+    "vision", "llava", "llama-4", "llama4", "scout", "maverick"
+)
 
 GROQ_BASE = "https://api.groq.com/openai/v1"
 
@@ -32,13 +42,22 @@ class GroqClient:
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _model_has_vision(model_id: str) -> bool:
+        lo = model_id.lower()
+        return any(k in lo for k in _GROQ_VISION_KEYWORDS)
+
     def list_models(self) -> list[dict]:
         """
-        Return available Groq chat models.
+        Return available Groq chat models with vision flag.
         Tries live /models endpoint first; falls back to static list.
+        Each dict: {"name": str, "vision": bool}
         """
+        def _wrap(model_id: str) -> dict:
+            return {"name": model_id, "vision": self._model_has_vision(model_id)}
+
         if not self.api_key:
-            return [{"name": m} for m in GROQ_CHAT_MODELS]
+            return [_wrap(m) for m in GROQ_CHAT_MODELS]
         try:
             r = requests.get(
                 f"{GROQ_BASE}/models",
@@ -47,16 +66,15 @@ class GroqClient:
             )
             if r.status_code == 200:
                 data = r.json().get("data", [])
-                # Filter to chat-capable models (exclude whisper/tts)
                 chat = [
-                    {"name": m["id"]}
+                    _wrap(m["id"])
                     for m in data
                     if "whisper" not in m["id"] and "tts" not in m["id"]
                 ]
-                return chat if chat else [{"name": m} for m in GROQ_CHAT_MODELS]
+                return chat if chat else [_wrap(m) for m in GROQ_CHAT_MODELS]
         except Exception:
             pass
-        return [{"name": m} for m in GROQ_CHAT_MODELS]
+        return [_wrap(m) for m in GROQ_CHAT_MODELS]
 
     def validate_key(self) -> tuple[bool, str]:
         """Returns (ok, error_msg). Tries a minimal models request."""

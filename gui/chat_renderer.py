@@ -122,7 +122,8 @@ def md_to_html(text: str, code_store: list[str]) -> str:
             code_text = '\n'.join(code_lines)
             idx = len(code_store)
             code_store.append(code_text)
-            lang_html = f'<span class="clang">{_html.escape(lang)}</span>' if lang else ''
+            lang_html = f'<span class="clang">{_html.escape(lang)}</span>' if lang else '<span class="clang">code</span>'
+
             result.append(
                 f'<div class="cb">'
                 f'<div class="cbh">{lang_html}'
@@ -231,19 +232,27 @@ def _css(dark: bool) -> str:
         body {
             background: #1e1e1e; color: #e8e8e8;
             font-family: 'DejaVu Sans', 'Segoe UI', sans-serif;
-            font-size: 15px; margin: 10px; line-height: 1.6;
+            font-size: 16px; margin: 10px; line-height: 1.65;
         }
         .msg { margin: 10px 0; border-radius: 8px; overflow: hidden; border: 1px solid #333; }
-        .mh  { padding: 5px 12px; font-size: 13px; font-weight: bold; }
-        .mb  { padding: 10px 14px; }
+        .mh  { padding: 6px 14px; font-size: 14px; font-weight: bold; }
+        .mb  { padding: 12px 16px; }
         .uh  { background: #1a3558; color: #7eb8f5; }
         .um  { border-color: #1a3558; }
         .um .mb { background: #1c2e40; white-space: pre-wrap; }
         .ah  { background: #1a3a1a; color: #7ec87e; }
         .am  { border-color: #1a3a1a; }
         .am .mb { background: #1c281c; }
-        .st  { color: #666; font-size: 12px; font-style: italic;
-               padding: 1px 6px; line-height: 1.4; }
+        .st  { color: #888; font-size: 13px; font-style: italic;
+               padding: 2px 8px; line-height: 1.5; }
+        .st-cb {
+            background: #111; border: 1px solid #2a2a2a;
+            border-radius: 5px; margin: 3px 8px; overflow: hidden;
+            font-style: normal;
+        }
+        .st-cb pre { margin:0; padding: 7px 12px; font-size: 12px;
+                     font-family: 'Courier New', monospace; color: #aaa;
+                     white-space: pre-wrap; }
         /* headings */
         h1 { color: #79b8ff; font-size: 1.45em; border-bottom: 1px solid #333;
              padding-bottom: 4px; margin: 10px 0 6px; }
@@ -253,8 +262,8 @@ def _css(dark: bool) -> str:
         /* inline code */
         code.ic {
             background: #2a2a2a; color: #f08080;
-            padding: 1px 6px; border-radius: 4px;
-            font-family: 'Courier New', monospace; font-size: 13px;
+            padding: 2px 7px; border-radius: 4px;
+            font-family: 'Courier New', monospace; font-size: 14px;
         }
         /* fenced code block */
         .cb {
@@ -262,18 +271,18 @@ def _css(dark: bool) -> str:
             border-radius: 7px; margin: 10px 0; overflow: hidden;
         }
         .cbh {
-            background: #161b22; padding: 5px 12px;
+            background: #161b22; padding: 5px 14px;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .clang { color: #79b8ff; font-family: monospace; font-size: 12px; }
+        .clang { color: #79b8ff; font-family: monospace; font-size: 13px; }
         .cpbtn {
             color: #58a6ff; text-decoration: none;
-            font-size: 12px; cursor: pointer;
+            font-size: 13px; cursor: pointer;
         }
         pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
         pre code {
             color: #c9d1d9; font-family: 'Courier New', 'Consolas', monospace;
-            font-size: 13px; line-height: 1.55; white-space: pre;
+            font-size: 14px; line-height: 1.6; white-space: pre;
             background: transparent;
         }
         /* table */
@@ -302,19 +311,27 @@ def _css(dark: bool) -> str:
         body {
             background: #ffffff; color: #24292e;
             font-family: 'DejaVu Sans', 'Segoe UI', sans-serif;
-            font-size: 15px; margin: 10px; line-height: 1.6;
+            font-size: 16px; margin: 10px; line-height: 1.65;
         }
         .msg { margin: 10px 0; border-radius: 8px; overflow: hidden; border: 1px solid #e1e4e8; }
-        .mh  { padding: 5px 12px; font-size: 13px; font-weight: bold; }
-        .mb  { padding: 10px 14px; }
+        .mh  { padding: 6px 14px; font-size: 14px; font-weight: bold; }
+        .mb  { padding: 12px 16px; }
         .uh  { background: #dbeafe; color: #1d4ed8; }
         .um  { border-color: #bfdbfe; }
         .um .mb { background: #eff6ff; white-space: pre-wrap; }
         .ah  { background: #dcfce7; color: #166534; }
         .am  { border-color: #bbf7d0; }
         .am .mb { background: #f0fdf4; }
-        .st  { color: #888; font-size: 12px; font-style: italic;
-               padding: 1px 6px; line-height: 1.4; }
+        .st  { color: #888; font-size: 13px; font-style: italic;
+               padding: 2px 8px; line-height: 1.5; }
+        .st-cb {
+            background: #f6f8fa; border: 1px solid #d0d7de;
+            border-radius: 5px; margin: 3px 8px; overflow: hidden;
+            font-style: normal;
+        }
+        .st-cb pre { margin:0; padding: 7px 12px; font-size: 12px;
+                     font-family: 'Courier New', monospace; color: #666;
+                     white-space: pre-wrap; }
         h1 { color: #1d4ed8; font-size: 1.45em; border-bottom: 1px solid #e1e4e8;
              padding-bottom: 4px; margin: 10px 0 6px; }
         h2 { color: #1d4ed8; font-size: 1.25em; margin: 9px 0 5px; }
@@ -322,26 +339,26 @@ def _css(dark: bool) -> str:
         h4 { color: #0f766e; font-size: 1.0em;  margin: 7px 0 3px; }
         code.ic {
             background: #f3f4f6; color: #d73a49;
-            padding: 1px 6px; border-radius: 4px;
-            font-family: 'Courier New', monospace; font-size: 13px;
+            padding: 2px 7px; border-radius: 4px;
+            font-family: 'Courier New', monospace; font-size: 14px;
         }
         .cb {
             background: #f6f8fa; border: 1px solid #d0d7de;
             border-radius: 7px; margin: 10px 0; overflow: hidden;
         }
         .cbh {
-            background: #eaeef2; padding: 5px 12px;
+            background: #eaeef2; padding: 5px 14px;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .clang { color: #0550ae; font-family: monospace; font-size: 12px; }
+        .clang { color: #0550ae; font-family: monospace; font-size: 13px; }
         .cpbtn {
             color: #0550ae; text-decoration: none;
-            font-size: 12px; cursor: pointer;
+            font-size: 13px; cursor: pointer;
         }
         pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
         pre code {
             color: #24292e; font-family: 'Courier New', 'Consolas', monospace;
-            font-size: 13px; line-height: 1.55; white-space: pre;
+            font-size: 14px; line-height: 1.6; white-space: pre;
             background: transparent;
         }
         table { border-collapse: collapse; width: 100%; margin: 8px 0; }
@@ -398,12 +415,34 @@ def chat_html(messages: list[dict], code_store: list[str], dark: bool = True) ->
             )
 
         elif t == 'status':
-            # Render status messages — skip completely blank ones
             stripped = content.strip()
             if not stripped:
                 continue
-            escaped = _html.escape(stripped).replace('\n', '<br>')
-            parts.append(f'<div class="st">{escaped}</div>')
+            # Render code blocks inside status messages as compact pre blocks
+            cb_pattern = re.compile(r'```[\w+-]*\n(.*?)```', re.DOTALL)
+            has_cb = cb_pattern.search(stripped)
+            if has_cb:
+                # Split on code fences; alternate: text, code, text, code …
+                seg_pattern = re.compile(r'(```[\w+-]*\n.*?```)', re.DOTALL)
+                segments = seg_pattern.split(stripped)
+                out_parts = []
+                for seg in segments:
+                    if seg.startswith('```'):
+                        inner = re.sub(r'^```[\w+-]*\n', '', seg).rstrip('`').strip()
+                        escaped_inner = _html.escape(inner)
+                        out_parts.append(
+                            f'<div class="st-cb"><pre>{escaped_inner}</pre></div>'
+                        )
+                    else:
+                        seg = seg.strip()
+                        if seg:
+                            out_parts.append(
+                                f'<div class="st">{_html.escape(seg).replace(chr(10), "<br>")}</div>'
+                            )
+                parts.append(''.join(out_parts))
+            else:
+                escaped = _html.escape(stripped).replace('\n', '<br>')
+                parts.append(f'<div class="st">{escaped}</div>')
 
     parts.append('</body></html>')
     return ''.join(parts)

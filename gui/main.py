@@ -23,16 +23,19 @@ import time
 from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
 from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFileDialog,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QProgressBar,
-    QPushButton, QTextEdit, QTextBrowser, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QTextEdit, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from database import DB_CLASS
 from ollama_client import OllamaClient
-from workers import DirectChatWorker, CrewChatWorker, RAGBuildWorker, GroqChatWorker
+from workers import (
+    DirectChatWorker, CrewChatWorker, RAGBuildWorker,
+    GroqChatWorker, SmartChatWorker,
+)
 from groq_client import GroqClient
 from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
@@ -43,6 +46,23 @@ _EMBED_FALLBACKS = [
     "nomic-embed-text:latest",
     "mxbai-embed-large:latest",
 ]
+
+
+def _truncate_text_blocks(
+    blocks: list[tuple[str, str]], max_chars: int
+) -> list[tuple[str, str]]:
+    """Trim text blocks so total character count stays within max_chars."""
+    out   = []
+    total = 0
+    for fname, content in blocks:
+        remaining = max_chars - total
+        if remaining <= 0:
+            break
+        if len(content) > remaining:
+            content = content[:remaining] + "\n…[truncated]"
+        out.append((fname, content))
+        total += len(content)
+    return out
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -66,8 +86,16 @@ class OllamaGUI(QMainWindow):
         self.models: list[dict] = []
         self.last_prompt        = ""
 
+        # Attachment state — cleared after each send
         self.attached_path   = None
-        self.attached_b64    = None
+        self.attached_images: list[str] = []
+        self.attached_texts:  list[tuple[str, str]] = []
+        self.attached_label  = ""
+
+        # Project ZIP session — persists across multiple messages
+        self.project_zip_path: str | None = None   # active zip path
+        self.project_zip_tree: str        = ""      # formatted tree string
+        self.project_zip_entries: list[str] = []    # all file paths inside zip
 
         # ── API mode (Groq) ──────────────────────────────────────────
         self.api_mode     = False
@@ -91,7 +119,6 @@ class OllamaGUI(QMainWindow):
         self._refresh_conversations()
         self._refresh_crews()
         self._update_crew_btn()
-        self._update_attach_btn()
         self._check_server_state()   # set initial server button + all UI states
         # Restore RAG button states if persisted index exists
         if self._rag_has_data():
@@ -303,8 +330,17 @@ class OllamaGUI(QMainWindow):
         self.attach_btn = QPushButton("📎")
         self.attach_btn.setFixedWidth(80)
         self.attach_btn.setMinimumHeight(80)
-        self.attach_btn.clicked.connect(self._attach_image)
+        self.attach_btn.setToolTip("Attach file(s) — images, code, zip (project)…")
+        self.attach_btn.clicked.connect(self._attach_files)
         inp_row.addWidget(self.attach_btn)
+
+        self.close_proj_btn = QPushButton("✖ Project")
+        self.close_proj_btn.setFixedWidth(90)
+        self.close_proj_btn.setMinimumHeight(80)
+        self.close_proj_btn.setToolTip("Close active project ZIP")
+        self.close_proj_btn.clicked.connect(self._clear_project)
+        self.close_proj_btn.setVisible(False)
+        inp_row.addWidget(self.close_proj_btn)
 
         self.input = QTextEdit()
         self.input.setFixedHeight(180)
@@ -455,13 +491,13 @@ class OllamaGUI(QMainWindow):
         if self.api_mode:
             groq = GroqClient(api_key=self.groq_api_key)
             groq_models = groq.list_models()
-            self.models = groq_models
+            self.models = groq_models   # each dict already has "name" + "vision"
             for m in groq_models:
                 self.model_box.addItem(m["name"])
             # For RAG in API mode, keep sentence-transformers embed options
             self.embed_box.clear()
             self.embed_box.addItems(_EMBED_FALLBACKS)
-            self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.\n")
+            self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.")
             return
 
         # ── Local Ollama mode ────────────────────────────────────────
@@ -517,14 +553,6 @@ class OllamaGUI(QMainWindow):
         return any(k in lo for k in (
             "llava", "bakllava", "vision", "moondream", "phi3-v", "minicpm-v"
         ))
-
-    def _update_attach_btn(self):
-        is_vision = self._current_model_vision()
-        self.attach_btn.setEnabled(is_vision)
-        self.attach_btn.setToolTip(
-            "Attach image (vision model)" if is_vision
-            else "Vision not supported by selected model"
-        )
 
     # ================================================================ #
     #  CONVERSATIONS                                                     #
@@ -867,24 +895,168 @@ class OllamaGUI(QMainWindow):
         )
 
     # ================================================================ #
-    #  VISION                                                            #
+    #  ATTACHMENTS                                                       #
     # ================================================================ #
-    def _attach_image(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image", "",
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+    def _attach_files(self):
+        """
+        Universal file picker.
+        • Images / code / text  → inject content as before
+        • ZIP                   → load as project session (tree only injected)
+        """
+        from attachment_handler import (
+            process_attachment, build_zip_tree, list_zip_entries,
         )
-        if not path:
+
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Attach file(s)", "",
+            "All Files (*);;"
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tiff *.ico);;"
+            "Code (*.py *.js *.ts *.sh *.bash *.c *.cpp *.h *.hpp *.go *.rs "
+            "*.java *.kt *.rb *.php *.pl *.lua *.r *.cs *.swift *.zig);;"
+            "Text / Data (*.txt *.md *.json *.yaml *.yml *.toml *.ini *.csv "
+            "*.xml *.html *.css);;"
+            "Archives (*.zip)"
+        )
+        if not paths:
             return
-        with open(path, "rb") as f:
-            self.attached_b64 = base64.b64encode(f.read()).decode()
-        self.attached_path = path
-        self._log(f"📎 Attached: {os.path.basename(path)}")
+
+        self.attached_images = []
+        self.attached_texts  = []
+        labels = []
+
+        for path in paths:
+            ext = os.path.splitext(path)[1].lower()
+
+            if ext == '.zip':
+                self._load_project_zip(path)
+                labels.append(f"📦 Project: {os.path.basename(path)}")
+                continue
+
+            result = process_attachment(path)
+            self.attached_images.extend(result.images)
+            self.attached_texts.extend(result.text_blocks)
+            labels.append(result.summary)
+
+        # Enforce 60 KB cap on plain text attachments
+        total = sum(len(c) for _, c in self.attached_texts)
+        if total > 60_000:
+            self.attached_texts = _truncate_text_blocks(self.attached_texts, 60_000)
+            labels.append("⚠️ Content trimmed to fit context limit")
+
+        if labels:
+            self.attached_label = " | ".join(labels)
+            self.attach_btn.setText("📎✓")
+            self._log(f"📎 {self.attached_label}")
+
+    def _load_project_zip(self, zip_path: str):
+        """
+        Load a zip as the active project session.
+        Stores the tree; actual file contents fetched on demand.
+        """
+        from attachment_handler import list_zip_entries, build_zip_tree
+
+        entries = list_zip_entries(zip_path)
+        if not entries:
+            self._log("⚠️ ZIP is empty or invalid.")
+            return
+
+        self.project_zip_path    = zip_path
+        self.project_zip_entries = entries
+        self.project_zip_tree    = build_zip_tree(entries)
+        self.close_proj_btn.setVisible(True)
+
+        n    = len(entries)
+        name = os.path.basename(zip_path)
+        info = (
+            f"📦 **Project loaded: `{name}`** — {n} files\n\n"
+            f"```\n{self.project_zip_tree}\n```\n\n"
+            f"ফাইল দেখতে বলো যেমন: *\"main.py দেখাও\"* বা "
+            f"*\"{name} এর gui/ ফোল্ডার analyze করো\"*"
+        )
+        self._chat_log.append({'type': 'ai', 'content': info, 'label': '📦 Project'})
+        self._render_chat()
+        self._log(f"📦 Project loaded: {name} ({n} files)")
+
+    def _resolve_project_files(self, prompt: str) -> list[tuple[str, str]]:
+        """
+        Given the user's prompt, find matching files from the project zip
+        and return their contents (max 3 files, max 60 KB total).
+        Called from _send() before building the message.
+        """
+        if not self.project_zip_path or not self.project_zip_entries:
+            return []
+
+        from attachment_handler import fetch_zip_files
+
+        prompt_lower = prompt.lower()
+
+        # Score each entry by how well it matches the prompt
+        scored: list[tuple[float, str]] = []
+        for entry in self.project_zip_entries:
+            basename = os.path.basename(entry).lower()
+            score = 0.0
+            if basename in prompt_lower:
+                score += 10.0
+            elif any(basename.startswith(w) for w in prompt_lower.split()):
+                score += 5.0
+            # directory match
+            parts = entry.lower().replace('\\', '/').split('/')
+            for part in parts[:-1]:
+                if part and part in prompt_lower:
+                    score += 3.0
+            # extension match
+            ext = os.path.splitext(basename)[1].lstrip('.')
+            if ext and ext in prompt_lower:
+                score += 2.0
+            if score > 0:
+                scored.append((score, entry))
+
+        # Take top 3 matches, cap at 60 KB total
+        scored.sort(key=lambda x: -x[0])
+        top = [e for _, e in scored[:3]]
+
+        if not top:
+            return []
+
+        blocks = fetch_zip_files(self.project_zip_path, top)
+        return _truncate_text_blocks(blocks, 60_000)
+
+    def _clear_attachments(self):
+        self.attached_images = []
+        self.attached_texts  = []
+        self.attached_label  = ""
+        self.attach_btn.setText("📎")
+
+    def _clear_project(self):
+        """Unload the active project zip session."""
+        if self.project_zip_path:
+            name = os.path.basename(self.project_zip_path)
+            self.project_zip_path    = None
+            self.project_zip_tree    = ""
+            self.project_zip_entries = []
+            self.close_proj_btn.setVisible(False)
+            self._log(f"📦 Project closed: {name}")
+
+    def _update_attach_btn(self):
+        pass   # no-op — attach button always visible
+
+    def _current_model_vision(self) -> bool:
+        name = self.model_box.currentText()
+        for m in self.models:
+            if m["name"] == name:
+                return m.get("vision", False)
+        lo = name.lower()
+        return any(k in lo for k in (
+            "llava", "bakllava", "vision", "moondream", "phi3-v", "minicpm-v",
+            "llama-4", "llama4", "scout", "maverick",
+        ))
 
     # ================================================================ #
     #  SEND                                                              #
     # ================================================================ #
     def _send(self):
+        from attachment_handler import AttachmentResult
+
         prompt = self.input.toPlainText().strip()
         if not prompt:
             return
@@ -902,39 +1074,25 @@ class OllamaGUI(QMainWindow):
         with QMutexLocker(self.db_mutex):
             self.db.add_message(self.current_conv_id, "user", prompt)
 
-        # Add user message bubble to chat
         self._add_user_msg(prompt)
 
         mode_tag = (
             f" (Crew: {len(self.current_crew_cfg)} agents)"
             if self.crew_mode and self.current_crew_cfg else ""
         )
-        # Start AI message bubble (empty, will fill during streaming)
         ai_label = f"🤖 AI{mode_tag}"
         self._start_ai_msg(ai_label)
         self._update_stop_btn(True)
 
-        # Build history (exclude the just-added user message — we'll add it below)
+        # Build history
         max_hist = 20 if self.crew_mode else 10
         with QMutexLocker(self.db_mutex):
             history = self.db.get_messages(self.current_conv_id)[-max_hist:]
 
-        # History messages (without the current prompt — added separately below)
-        ollama_msgs = [{"role": m["role"], "content": m["content"]}
-                       for m in history[:-1]]   # exclude last (current user msg)
-
-        # Build current user message — attach image if present
-        current_msg: dict = {"role": "user", "content": prompt}
-        if self.attached_b64:
-            if self._current_model_vision():
-                current_msg["images"] = [self.attached_b64]
-                self._log(f"🖼 Image sent to model.\n")
-            else:
-                self._log("⚠️ Model does not support vision — image ignored.\n")
-            self.attached_path = None
-            self.attached_b64  = None
-
-        ollama_msgs.append(current_msg)
+        ollama_msgs = [
+            {"role": m["role"], "content": m["content"]}
+            for m in history[:-1]
+        ]
 
         # RAG injection
         rag_ctx = self._rag_context(prompt)
@@ -945,14 +1103,45 @@ class OllamaGUI(QMainWindow):
             )
             ollama_msgs.insert(0, {"role": "system", "content": sys_rag})
 
-        # Start worker
+        ollama_msgs.append({"role": "user", "content": prompt})
+
+        # Grab attachment data, then clear for next message
+        images        = list(self.attached_images)
+        text_blocks   = list(self.attached_texts)
+        self._clear_attachments()
+
+        # Build text injection from plain attached files
+        text_injection = ""
+        if text_blocks:
+            import os as _os
+            parts = []
+            for fname, content in text_blocks:
+                raw_ext = _os.path.splitext(fname)[1].lstrip('.').lower()
+                lang = raw_ext or 'text'
+                parts.append(f"### `{fname}`\n```{lang}\n{content}\n```")
+            text_injection = "\n\n".join(parts)
+
+        # Project ZIP: inject tree (always) + auto-fetch relevant files
+        if self.project_zip_path:
+            relevant = self._resolve_project_files(prompt)
+            zip_name = os.path.basename(self.project_zip_path)
+            zip_ctx  = f"**Project: `{zip_name}`**\n\nFile tree:\n```\n{self.project_zip_tree}\n```"
+            if relevant:
+                file_parts = []
+                for fname, content in relevant:
+                    ext  = os.path.splitext(fname)[1].lstrip('.').lower()
+                    file_parts.append(f"### `{fname}`\n```{ext or 'text'}\n{content}\n```")
+                zip_ctx += "\n\nRelevant files:\n\n" + "\n\n".join(file_parts)
+            text_injection = (zip_ctx + "\n\n" + text_injection).strip()
+
+        # ── Crew mode ────────────────────────────────────────────────
         if self.crew_mode:
             if not self.current_crew_cfg:
-                self._log("❌ No crew selected!\n")
+                self._log("❌ No crew selected!")
                 self._update_stop_btn(False)
                 return
             if self.api_mode and not self.groq_api_key.strip():
-                self._log("❌ Groq API key not set! Enter your key first.\n")
+                self._log("❌ Groq API key not set!")
                 self._update_stop_btn(False)
                 return
             crew_cfg = copy.deepcopy(self.current_crew_cfg)
@@ -965,26 +1154,33 @@ class OllamaGUI(QMainWindow):
                 api_key=self.groq_api_key if self.api_mode else "",
                 api_model_override=self.model_box.currentText() if self.api_mode else "",
             )
-        else:
-            if self.api_mode:
-                if not self.groq_api_key.strip():
-                    self._log("❌ Groq API key not set! Switch to API mode and enter your key.\n")
-                    self._update_stop_btn(False)
-                    return
-                self.thread = GroqChatWorker(
-                    self.model_box.currentText(), ollama_msgs, self.groq_api_key
-                )
-            else:
-                self.thread = DirectChatWorker(
-                    self.model_box.currentText(), ollama_msgs
-                )
+            self.thread.token.connect(self._append_token)
+            self.thread.finished.connect(self._on_done)
+            self.thread.error.connect(self._on_error)
+            self.thread.start()
+            QTimer.singleShot(600_000, lambda: self.thread and self.thread.stop())
+            return
 
+        # ── Smart chat (single model, with attachments) ───────────────
+        if self.api_mode and not self.groq_api_key.strip():
+            self._log("❌ Groq API key not set! Switch to API mode and enter your key.")
+            self._update_stop_btn(False)
+            return
+
+        self.thread = SmartChatWorker(
+            model            = self.model_box.currentText(),
+            messages         = ollama_msgs,
+            images           = images,
+            text_injection   = text_injection,
+            api_mode         = self.api_mode,
+            api_key          = self.groq_api_key,
+            available_models = self.models,
+        )
         self.thread.token.connect(self._append_token)
         self.thread.finished.connect(self._on_done)
         self.thread.error.connect(self._on_error)
+        self.thread.status.connect(self._add_status)
         self.thread.start()
-
-        # Safety timeout: 10 min
         QTimer.singleShot(600_000, lambda: self.thread and self.thread.stop())
 
     def _append_token(self, text: str):
@@ -1009,7 +1205,6 @@ class OllamaGUI(QMainWindow):
                 self.db.add_message(
                     self.current_conv_id, "assistant", response
                 )
-            # Finalize the last AI message content
             if self._chat_log and self._chat_log[-1]['type'] == 'ai':
                 self._chat_log[-1]['content'] = response
 
@@ -1018,10 +1213,10 @@ class OllamaGUI(QMainWindow):
             self._add_status(f"📊 {len(response)} chars | {speed:.0f} ch/s | {elapsed:.1f}s")
 
         self._is_streaming = False
-        # Full markdown render now that we have the complete response
         self._render_chat()
         self._update_stop_btn(False)
         self._cleanup_thread()
+        # Code blocks now have ▶ Run buttons — no auto-execution
 
     def _on_error(self, err: str):
         self._is_streaming = False
@@ -1143,7 +1338,7 @@ class OllamaGUI(QMainWindow):
         self.model_box.setEnabled(effective)
         self.mode_btn.setEnabled(effective)
         self.crew_btn.setEnabled(effective)
-        self.attach_btn.setEnabled(effective and self._current_model_vision())
+        self.attach_btn.setEnabled(effective)   # always enabled when server is up
         if not effective:
             self.input.setPlaceholderText(
                 "⏸ Ollama server stopped — press [Server: OFF] to start"
@@ -1414,14 +1609,16 @@ class OllamaGUI(QMainWindow):
             )
 
     def _on_anchor_clicked(self, url: QUrl):
-        """Handle copy:N anchor clicks from code block copy buttons."""
+        """Handle copy:N and run:N anchor clicks from code block buttons."""
         s = url.toString()
+
         if s.startswith('copy:'):
             try:
                 idx = int(s[5:])
                 if 0 <= idx < len(self._code_store):
                     QApplication.clipboard().setText(self._code_store[idx])
-                    self._add_status("📋 Code copied to clipboard!")
+                    self._add_status("📋 Copied to clipboard")
+                    self._render_chat()
             except ValueError:
                 pass
 
