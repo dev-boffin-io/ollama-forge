@@ -1204,10 +1204,15 @@ class OllamaGUI(QMainWindow):
 
     def _append_token(self, text: str):
         """Fast path: accumulate token in the tracked AI message slot."""
+        if not self._is_streaming:
+            return   # stale signal after cleanup — ignore
         idx = self._streaming_ai_idx
         if 0 <= idx < len(self._chat_log):
             self._chat_log[idx]['content'] += text
         # Append plain text to display (fast — no full re-render during streaming)
+        doc = self.chat.document()
+        if doc.isEmpty():
+            return   # document was cleared; cursor position would be invalid
         cursor = self.chat.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
@@ -1249,11 +1254,11 @@ class OllamaGUI(QMainWindow):
 
     def _stop_or_reload(self):
         if self.thread and self.thread.isRunning():
-            self.thread.stop()
             self._is_streaming = False
             self._log("⚠️ Stopped.")
             self._render_chat()
             self._update_stop_btn(False)
+            self._cleanup_thread()   # stop + wait + disconnect + deleteLater
         elif self.last_prompt and self.current_conv_id:
             self.input.setPlainText(self.last_prompt)
             self._send()
@@ -1273,8 +1278,23 @@ class OllamaGUI(QMainWindow):
 
     def _cleanup_thread(self):
         if self.thread:
-            self.thread.deleteLater()
-            self.thread = None
+            t = self.thread
+            self.thread = None          # clear ref first so late signals are ignored
+            # Disconnect all signals to prevent stale callbacks after cleanup
+            try: t.token.disconnect()
+            except Exception: pass
+            try: t.finished.disconnect()
+            except Exception: pass
+            try: t.error.disconnect()
+            except Exception: pass
+            try: t.status.disconnect()
+            except Exception: pass
+            # Signal the thread to stop, then wait up to 3 s before giving up
+            t.stop()
+            if not t.wait(3000):        # 3 second graceful timeout
+                t.terminate()
+                t.wait(1000)
+            t.deleteLater()
 
     # ================================================================ #
     #  GROQ API TOGGLE                                                   #
