@@ -232,10 +232,10 @@ def _css(dark: bool) -> str:
         body {
             background: #1e1e1e; color: #e8e8e8;
             font-family: 'DejaVu Sans', 'Segoe UI', sans-serif;
-            font-size: 16px; margin: 10px; line-height: 1.65;
+            font-size: 32px; margin: 10px; line-height: 1.75;
         }
         .msg { margin: 10px 0; border-radius: 8px; overflow: hidden; border: 1px solid #333; }
-        .mh  { padding: 6px 14px; font-size: 14px; font-weight: bold; }
+        .mh  { padding: 6px 14px; font-size: 30px; font-weight: bold; }
         .mb  { padding: 12px 16px; }
         .uh  { background: #1a3558; color: #7eb8f5; }
         .um  { border-color: #1a3558; }
@@ -243,14 +243,14 @@ def _css(dark: bool) -> str:
         .ah  { background: #1a3a1a; color: #7ec87e; }
         .am  { border-color: #1a3a1a; }
         .am .mb { background: #1c281c; }
-        .st  { color: #888; font-size: 13px; font-style: italic;
+        .st  { color: #888; font-size: 29px; font-style: italic;
                padding: 2px 8px; line-height: 1.5; }
         .st-cb {
             background: #111; border: 1px solid #2a2a2a;
             border-radius: 5px; margin: 3px 8px; overflow: hidden;
             font-style: normal;
         }
-        .st-cb pre { margin:0; padding: 7px 12px; font-size: 12px;
+        .st-cb pre { margin:0; padding: 7px 12px; font-size: 22px;
                      font-family: 'Courier New', monospace; color: #aaa;
                      white-space: pre-wrap; }
         /* headings */
@@ -263,7 +263,7 @@ def _css(dark: bool) -> str:
         code.ic {
             background: #2a2a2a; color: #f08080;
             padding: 2px 7px; border-radius: 4px;
-            font-family: 'Courier New', monospace; font-size: 14px;
+            font-family: 'Courier New', monospace; font-size: 28px;
         }
         /* fenced code block */
         .cb {
@@ -274,15 +274,15 @@ def _css(dark: bool) -> str:
             background: #161b22; padding: 5px 14px;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .clang { color: #79b8ff; font-family: monospace; font-size: 13px; }
+        .clang { color: #79b8ff; font-family: monospace; font-size: 26px; }
         .cpbtn {
             color: #58a6ff; text-decoration: none;
-            font-size: 13px; cursor: pointer;
+            font-size: 26px; cursor: pointer;
         }
         pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
         pre code {
             color: #c9d1d9; font-family: 'Courier New', 'Consolas', monospace;
-            font-size: 14px; line-height: 1.6; white-space: pre;
+            font-size: 28px; line-height: 1.6; white-space: pre;
             background: transparent;
         }
         /* table */
@@ -311,10 +311,10 @@ def _css(dark: bool) -> str:
         body {
             background: #ffffff; color: #24292e;
             font-family: 'DejaVu Sans', 'Segoe UI', sans-serif;
-            font-size: 16px; margin: 10px; line-height: 1.65;
+            font-size: 32px; margin: 10px; line-height: 1.75;
         }
         .msg { margin: 10px 0; border-radius: 8px; overflow: hidden; border: 1px solid #e1e4e8; }
-        .mh  { padding: 6px 14px; font-size: 14px; font-weight: bold; }
+        .mh  { padding: 6px 14px; font-size: 30px; font-weight: bold; }
         .mb  { padding: 12px 16px; }
         .uh  { background: #dbeafe; color: #1d4ed8; }
         .um  { border-color: #bfdbfe; }
@@ -322,14 +322,14 @@ def _css(dark: bool) -> str:
         .ah  { background: #dcfce7; color: #166534; }
         .am  { border-color: #bbf7d0; }
         .am .mb { background: #f0fdf4; }
-        .st  { color: #888; font-size: 13px; font-style: italic;
+        .st  { color: #888; font-size: 29px; font-style: italic;
                padding: 2px 8px; line-height: 1.5; }
         .st-cb {
             background: #f6f8fa; border: 1px solid #d0d7de;
             border-radius: 5px; margin: 3px 8px; overflow: hidden;
             font-style: normal;
         }
-        .st-cb pre { margin:0; padding: 7px 12px; font-size: 12px;
+        .st-cb pre { margin:0; padding: 7px 12px; font-size: 22px;
                      font-family: 'Courier New', monospace; color: #666;
                      white-space: pre-wrap; }
         h1 { color: #1d4ed8; font-size: 1.45em; border-bottom: 1px solid #e1e4e8;
@@ -340,7 +340,7 @@ def _css(dark: bool) -> str:
         code.ic {
             background: #f3f4f6; color: #d73a49;
             padding: 2px 7px; border-radius: 4px;
-            font-family: 'Courier New', monospace; font-size: 14px;
+            font-family: 'Courier New', monospace; font-size: 28px;
         }
         .cb {
             background: #f6f8fa; border: 1px solid #d0d7de;
@@ -350,15 +350,15 @@ def _css(dark: bool) -> str:
             background: #eaeef2; padding: 5px 14px;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .clang { color: #0550ae; font-family: monospace; font-size: 13px; }
+        .clang { color: #0550ae; font-family: monospace; font-size: 26px; }
         .cpbtn {
             color: #0550ae; text-decoration: none;
-            font-size: 13px; cursor: pointer;
+            font-size: 26px; cursor: pointer;
         }
         pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
         pre code {
             color: #24292e; font-family: 'Courier New', 'Consolas', monospace;
-            font-size: 14px; line-height: 1.6; white-space: pre;
+            font-size: 28px; line-height: 1.6; white-space: pre;
             background: transparent;
         }
         table { border-collapse: collapse; width: 100%; margin: 8px 0; }

@@ -21,7 +21,7 @@ import threading
 import time
 
 from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -39,6 +39,11 @@ from workers import (
 from groq_client import GroqClient
 from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
+
+
+# Persistent settings file — stores theme and Groq API key
+_CONFIG_DIR  = os.path.join(os.path.expanduser("~"), ".ollama_gui")
+_SETTINGS_FILE = os.path.join(_CONFIG_DIR, "settings.json")
 
 
 # Fallback embedding model names shown when Ollama has no embed models installed
@@ -100,6 +105,9 @@ class OllamaGUI(QMainWindow):
         # ── API mode (Groq) ──────────────────────────────────────────
         self.api_mode     = False
         self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        self._saved_model  = ""   # restored by _load_settings below
+
+        self._load_settings()   # overwrite defaults with persisted values
 
         # ── Chat rendering ───────────────────────────────────────────
         self._chat_log:    list[dict] = []   # {type, content, label?}
@@ -262,6 +270,7 @@ class OllamaGUI(QMainWindow):
         self.model_box.setMinimumWidth(500)
         self.model_box.setMinimumHeight(60)
         self.model_box.currentIndexChanged.connect(self._update_attach_btn)
+        self.model_box.currentIndexChanged.connect(self._on_model_changed)
         top.addWidget(self.model_box)
         top.addStretch()
 
@@ -315,6 +324,12 @@ class OllamaGUI(QMainWindow):
         self.groq_save_btn.setMinimumWidth(140)
         self.groq_save_btn.clicked.connect(self._apply_groq_key)
         groq_layout.addWidget(self.groq_save_btn)
+        self.groq_clear_btn = QPushButton("🗑 Clear")
+        self.groq_clear_btn.setMinimumHeight(56)
+        self.groq_clear_btn.setMinimumWidth(120)
+        self.groq_clear_btn.setToolTip("Remove saved Groq API key")
+        self.groq_clear_btn.clicked.connect(self._clear_groq_key)
+        groq_layout.addWidget(self.groq_clear_btn)
         self.groq_row.setVisible(False)
         v.addWidget(self.groq_row)
 
@@ -322,7 +337,9 @@ class OllamaGUI(QMainWindow):
         self.chat = QTextBrowser()
         self.chat.setReadOnly(True)
         self.chat.setOpenLinks(False)
-        self.chat.setFont(QFont("DejaVu Sans", 32))
+        # Font is controlled entirely by the QSS stylesheet (_apply_theme).
+        # Do NOT call setFont() here — it overrides Qt's glyph-fallback
+        # mechanism and breaks non-Latin (e.g. Bengali) input rendering.
         self.chat.anchorClicked.connect(self._on_anchor_clicked)
         v.addWidget(self.chat, 1)
 
@@ -345,7 +362,6 @@ class OllamaGUI(QMainWindow):
 
         self.input = QTextEdit()
         self.input.setFixedHeight(180)
-        self.input.setFont(QFont("DejaVu Sans", 30))
         self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
         inp_row.addWidget(self.input, 1)
         v.addLayout(inp_row)
@@ -381,9 +397,9 @@ class OllamaGUI(QMainWindow):
     #  THEME                                                             #
     # ================================================================ #
     # Shared font sizes — change here to affect both themes
-    _FONT_UI   = 28   # buttons, labels, combos, list items
-    _FONT_CHAT = 32   # chat display
-    _FONT_INPUT= 30   # message input
+    _FONT_UI   = 32   # buttons, labels, combos, list items
+    _FONT_CHAT = 44   # chat display
+    _FONT_INPUT= 40   # message input
 
     def _apply_theme(self):
         base = f"""
@@ -398,8 +414,8 @@ class OllamaGUI(QMainWindow):
             QListWidget  {{ font-size: {self._FONT_UI}px; border-radius: 8px; }}
             QListWidget::item {{ padding: 16px 10px; border-radius: 6px;
                                 margin: 2px 4px; }}
-            QTextBrowser, QTextEdit {{ font-size: {self._FONT_CHAT}px;
-                                        border-radius: 8px; }}
+            QTextBrowser {{ font-size: {self._FONT_CHAT}px; border-radius: 8px; }}
+            QTextEdit    {{ font-size: {self._FONT_INPUT}px; border-radius: 8px; }}
             QProgressBar {{ border-radius: 6px; min-height: 20px; }}
         """
         if self.dark:
@@ -475,9 +491,9 @@ class OllamaGUI(QMainWindow):
 
     def _toggle_theme(self):
         self.dark = not self.dark
+        self._save_settings()
         self._apply_theme()
-        self.chat.setFont(QFont("DejaVu Sans", self._FONT_CHAT))
-        self.input.setFont(QFont("DejaVu Sans", self._FONT_INPUT))
+        # Font size is set via QSS above — no setFont() needed.
         # Re-render chat with new theme colors
         self._render_chat()
 
@@ -499,6 +515,7 @@ class OllamaGUI(QMainWindow):
             self.embed_box.clear()
             self.embed_box.addItems(_EMBED_FALLBACKS)
             self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.")
+            self._restore_saved_model()
             return
 
         # ── Local Ollama mode ────────────────────────────────────────
@@ -542,6 +559,7 @@ class OllamaGUI(QMainWindow):
             else:
                 msg = f"⚠️ Ollama not reachable — {err[:120]}"
             self._log(msg)
+        self._restore_saved_model()
 
     def _current_model_vision(self) -> bool:
         name = self.model_box.currentText()
@@ -1261,6 +1279,59 @@ class OllamaGUI(QMainWindow):
     # ================================================================ #
     #  GROQ API TOGGLE                                                   #
     # ================================================================ #
+    # ================================================================ #
+    #  PERSISTENT SETTINGS                                               #
+    # ================================================================ #
+    def _load_settings(self) -> None:
+        """Load persisted settings from ~/.ollama_gui/settings.json."""
+        if not os.path.isfile(_SETTINGS_FILE):
+            return
+        try:
+            with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "dark" in data:
+                self.dark = bool(data["dark"])
+            if data.get("groq_api_key"):
+                self.groq_api_key = data["groq_api_key"]
+            self._saved_model = data.get("selected_model", "")
+        except Exception:
+            pass  # corrupt file — keep defaults, will be overwritten on next save
+
+    def _restore_saved_model(self) -> None:
+        """After populating model_box, select the last-used model if present."""
+        if not self._saved_model:
+            return
+        idx = self.model_box.findText(self._saved_model)
+        if idx >= 0:
+            self.model_box.blockSignals(True)
+            self.model_box.setCurrentIndex(idx)
+            self.model_box.blockSignals(False)
+
+    def _on_model_changed(self) -> None:
+        """Persist the newly selected model immediately."""
+        self._save_settings()
+
+    def _save_settings(self) -> None:
+        """Persist current theme and Groq API key to ~/.ollama_gui/settings.json."""
+        os.makedirs(_CONFIG_DIR, exist_ok=True)
+        data = {
+            "dark": self.dark,
+            "groq_api_key": self.groq_api_key,
+            "selected_model": self.model_box.currentText(),
+        }
+        try:
+            with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as exc:
+            self._log(f"⚠️ Could not save settings: {exc}\n")
+
+    def _clear_groq_key(self) -> None:
+        """Clear the saved Groq API key from memory and disk."""
+        self.groq_api_key = ""
+        self.groq_key_input.clear()
+        self._save_settings()
+        self._log("🗑 Groq API key cleared.\n")
+
     def _toggle_api_mode(self):
         """Switch between Local Ollama and Groq API mode."""
         self.api_mode = not self.api_mode
@@ -1309,7 +1380,8 @@ class OllamaGUI(QMainWindow):
 
         if ok:
             self.groq_api_key = key
-            self._log("✅ Groq API key valid — models reloaded.\n")
+            self._save_settings()
+            self._log("✅ Groq API key valid — saved and models reloaded.\n")
             self._load_models()
         else:
             self._log(f"❌ Groq key error: {err}\n")
@@ -1646,6 +1718,27 @@ class OllamaGUI(QMainWindow):
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
+
+    # Set application-level font with Bengali fallback chain.
+    # Using QApplication.setFont() is the only reliable way to enable
+    # non-Latin glyph rendering in all widgets (including QTextEdit input).
+    _db = QFontDatabase()
+    _families = set(_db.families())
+    _BENGALI_CHAIN = [
+        "Noto Sans Bengali", "Noto Serif Bengali",
+        "Kalpurush", "SolaimanLipi", "Lohit Bengali",
+        "FreeSans", "FreeSerif", "Unifont",
+        "DejaVu Sans",
+    ]
+    _primary = next((f for f in _BENGALI_CHAIN if f in _families), "")
+    _app_font = QFont(_primary, 14)   # size overridden by QSS per-widget
+    _app_font.setStyleHint(QFont.SansSerif)
+    try:
+        _app_font.setFamilies([f for f in _BENGALI_CHAIN if f in _families] or ["Sans Serif"])
+    except AttributeError:
+        pass
+    app.setFont(_app_font)
+
     win = OllamaGUI()
     win.show()
     sys.exit(app.exec_())
