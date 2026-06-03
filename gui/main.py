@@ -241,8 +241,12 @@ class OllamaGUI(QMainWindow):
         self.mgr_btn.setMinimumHeight(70)
         self.mgr_btn.clicked.connect(self._open_manager)
         self.mgr_btn.setStyleSheet(
+            "QPushButton {"
             "background:#1a5f1a;color:white;font-weight:bold;"
-            "padding:8px;border-radius:8px;font-size:28px;"
+            "padding:8px;border-radius:8px;font-size:28px;}"
+            "QPushButton:disabled {"
+            "background:#1a2e1a;color:#4a6b4a;"
+            "border:1px solid #2a3f2a;}"
         )
         v.addWidget(self.mgr_btn)
 
