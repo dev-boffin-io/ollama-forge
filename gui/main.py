@@ -1461,11 +1461,13 @@ class OllamaGUI(QMainWindow):
             self.groq_row.setVisible(True)
             # Hide server button in API mode — not needed
             self.server_btn.setVisible(False)
+            self.mgr_btn.setVisible(False)
             self._log("☁️ Switched to Groq API mode.\n")
         else:
             self.api_toggle_btn.setText("🖥️ Local")
             self.groq_row.setVisible(False)
             self.server_btn.setVisible(True)
+            self.mgr_btn.setVisible(True)
             self._log("🖥️ Switched to Local Ollama mode.\n")
 
         self._load_models()
