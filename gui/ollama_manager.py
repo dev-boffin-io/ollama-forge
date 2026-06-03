@@ -132,11 +132,12 @@ class _ManageWorker(QThread):
         "/etc/systemd/system/ollama.service.d",
     ]
 
-    def __init__(self, command, ollama_bin="ollama"):
+    def __init__(self, command, ollama_bin="ollama", sudo_password=None):
         super().__init__()
         self.command = command
         self._ollama_bin = ollama_bin
         self._cancelled = False
+        self._sudo_password = sudo_password
 
     def stop(self): self._cancelled = True
 
@@ -148,7 +149,61 @@ class _ManageWorker(QThread):
         self.finished_ok.emit()
 
     def _emit(self, msg): self.line.emit(msg)
-    def _sudo(self): return [] if os.geteuid() == 0 else ["sudo"]
+    def _sudo(self): return [] if os.geteuid() == 0 else ["sudo", "-A"]
+
+    def _make_sudo_env(self):
+        """Build env with SUDO_ASKPASS pointing to a temp script that echoes
+        the password. Covers ALL sudo calls inside child processes — no TTY needed.
+        Returns (env_dict, tmp_path_or_None)."""
+        env = os.environ.copy()
+        if os.geteuid() == 0 or not self._sudo_password:
+            return env, None
+        import shlex as _shlex
+        fd, tmp = tempfile.mkstemp(suffix=".sh", prefix=".ollama_askpass_")
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(
+                    "#!/bin/sh\n"
+                    f"printf '%s\\n' {_shlex.quote(self._sudo_password)}\n"
+                )
+            os.chmod(tmp, 0o700)
+            env["SUDO_ASKPASS"] = tmp
+        except Exception as e:
+            self._emit(f"\u26a0\ufe0f askpass setup failed: {e}")
+            try: os.remove(tmp)
+            except Exception: pass
+            return env, None
+        return env, tmp
+
+    def _stream_shell(self, cmd):
+        """Run a shell command, streaming output line by line.
+        If a sudo password is available, runs the whole command as root via
+        `sudo -kS sh -c cmd` so inner scripts never need to call sudo again.
+        """
+        env, askpass_tmp = self._make_sudo_env()
+        try:
+            if os.geteuid() != 0 and self._sudo_password:
+                # Run entire command as root — inner sudo calls become no-ops
+                proc = subprocess.Popen(
+                    ["sudo", "-kS", "sh", "-c", cmd],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE, text=True, bufsize=1, env=env)
+                proc.stdin.write(self._sudo_password + "\n")
+                proc.stdin.close()
+            else:
+                proc = subprocess.Popen(
+                    ["sh", "-c", cmd], stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+            for ln in proc.stdout:
+                if self._cancelled:
+                    proc.terminate(); return
+                self._emit(ln.rstrip())
+            proc.wait()
+        finally:
+            if askpass_tmp:
+                try: os.remove(askpass_tmp)
+                except Exception: pass
+
 
     def _current_ver(self):
         try:
@@ -174,15 +229,6 @@ class _ManageWorker(QThread):
                 pass
         return None
 
-    def _stream_shell(self, cmd):
-        proc = subprocess.Popen(
-            ["sh", "-c", cmd], stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for ln in proc.stdout:
-            if self._cancelled:
-                proc.terminate(); return
-            self._emit(ln.rstrip())
-        proc.wait()
 
     def _cmd_update(self):
         cur = self._current_ver()
@@ -216,23 +262,33 @@ class _ManageWorker(QThread):
         self._emit(f"Upgrading {cur} to {lat}...")
         self._stream_shell(self._INSTALL_CMD)
 
+
     def _cmd_uninstall(self):
         cur = self._current_ver()
         if not cur:
             self._emit("Ollama is not installed."); return
+        env, askpass_tmp = self._make_sudo_env()
         prefix = self._sudo()
-        r = subprocess.run(["systemctl","is-active","--quiet","ollama"], capture_output=True)
-        if r.returncode == 0:
-            subprocess.run(prefix + ["systemctl","stop","ollama"])
-            subprocess.run(prefix + ["systemctl","disable","ollama"])
-            self._emit("Stopped ollama.service")
-        existing = [p for p in self._OLLAMA_PATHS if os.path.exists(p)]
-        if existing:
-            subprocess.run(prefix + ["rm","-rf"] + existing)
-            self._emit(f"Removed: {', '.join(existing)}")
-        if any("systemd" in p for p in existing):
-            subprocess.run(prefix + ["systemctl","daemon-reload"], capture_output=True)
-        self._emit("Ollama removed.")
+        try:
+            r = subprocess.run(["systemctl","is-active","--quiet","ollama"],
+                               capture_output=True, env=env)
+            if r.returncode == 0:
+                subprocess.run(prefix + ["systemctl","stop","ollama"], env=env)
+                subprocess.run(prefix + ["systemctl","disable","ollama"], env=env)
+                self._emit("Stopped ollama.service")
+            existing = [p for p in self._OLLAMA_PATHS if os.path.exists(p)]
+            if existing:
+                subprocess.run(prefix + ["rm","-rf"] + existing, env=env)
+                self._emit(f"Removed: {', '.join(existing)}")
+            if any("systemd" in p for p in existing):
+                subprocess.run(prefix + ["systemctl","daemon-reload"],
+                               capture_output=True, env=env)
+            self._emit("Ollama removed.")
+        finally:
+            if askpass_tmp:
+                try: os.remove(askpass_tmp)
+                except Exception: pass
+
 
 def _safe_remove(path):
     try:
@@ -606,6 +662,7 @@ class OllamaManager(QMainWindow):
         self.lbl_lat_ver = QLabel("Latest version:  —")
         self.lbl_cur_ver.setObjectName("secLabel")
         self.lbl_lat_ver.setObjectName("secLabel")
+        ver_row = QHBoxLayout()
         ver_row.addWidget(self.lbl_cur_ver)
         ver_row.addStretch()
         ver_row.addWidget(self.lbl_lat_ver)
@@ -690,18 +747,38 @@ class OllamaManager(QMainWindow):
             lambda: self._manage_set_busy(False))
         self._active_manage_worker.start()
 
+    def _ask_sudo_password(self):
+        """Prompt for sudo password. Returns str (possibly empty if root) or None if cancelled."""
+        if os.geteuid() == 0:
+            return ""
+        from PyQt5.QtWidgets import QInputDialog, QLineEdit
+        pwd, ok = QInputDialog.getText(
+            self, "sudo Password Required",
+            "Enter sudo password to continue:",
+            QLineEdit.Password,
+        )
+        return pwd if ok else None
+
     def _manage_install(self):
-        self._manage_log_append("⬇ Installing Ollama…")
+        pwd = self._ask_sudo_password()
+        if pwd is None:
+            return
+        self._manage_log_append("\u2b07 Installing Ollama\u2026")
         self._manage_set_busy(True)
-        self._active_manage_worker = _ManageWorker("install", self._ollama_bin)
+        self._active_manage_worker = _ManageWorker(
+            "install", self._ollama_bin, sudo_password=pwd)
         self._active_manage_worker.line.connect(self._on_manage_line)
         self._active_manage_worker.finished_ok.connect(self._after_manage_action)
         self._active_manage_worker.start()
 
     def _manage_upgrade(self):
-        self._manage_log_append("⬆ Upgrading Ollama…")
+        pwd = self._ask_sudo_password()
+        if pwd is None:
+            return
+        self._manage_log_append("\u2b06 Upgrading Ollama\u2026")
         self._manage_set_busy(True)
-        self._active_manage_worker = _ManageWorker("upgrade", self._ollama_bin)
+        self._active_manage_worker = _ManageWorker(
+            "upgrade", self._ollama_bin, sudo_password=pwd)
         self._active_manage_worker.line.connect(self._on_manage_line)
         self._active_manage_worker.finished_ok.connect(self._after_manage_action)
         self._active_manage_worker.start()
@@ -714,12 +791,17 @@ class OllamaManager(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
-        self._manage_log_append("🗑 Uninstalling Ollama…")
+        pwd = self._ask_sudo_password()
+        if pwd is None:
+            return
+        self._manage_log_append("\U0001f5d1 Uninstalling Ollama\u2026")
         self._manage_set_busy(True)
-        self._active_manage_worker = _ManageWorker("uninstall", self._ollama_bin)
+        self._active_manage_worker = _ManageWorker(
+            "uninstall", self._ollama_bin, sudo_password=pwd)
         self._active_manage_worker.line.connect(self._on_manage_line)
         self._active_manage_worker.finished_ok.connect(self._after_manage_action)
         self._active_manage_worker.start()
+
 
     def _manage_cancel(self):
         w = getattr(self, "_active_manage_worker", None)
