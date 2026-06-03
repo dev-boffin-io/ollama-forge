@@ -29,7 +29,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 | Component | Binary | Role |
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
-| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, conversation history, crew multi-agent mode, and optional Groq API backend |
+| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, Groq API backend, vision models, file/ZIP attachments, markdown rendering, and crew multi-agent mode |
 | [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + Chainlit web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
@@ -100,40 +100,84 @@ ollama-main uninstall   # Stop service, disable systemd unit, remove all paths
 
 ## Ollama GUI
 
-`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt5**. It communicates with a locally running Ollama server via its REST API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without any cloud dependency or LangChain.
-
-The companion window `Ollama-ai-manager` handles the operational side: Ollama service control, model management, authentication, and binary updates.
+`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt5**. It communicates with a locally running Ollama server via its REST API or the Groq cloud API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without LangChain.
 
 ### API Mode Toggle — Local vs Groq
 
 The GUI supports two backend modes switchable at runtime via the **Local / Groq API** toggle button in the toolbar:
 
 - **Local mode (default):** Sends all inference requests to a locally running `ollama serve` instance. The server status button, Ollama Manager, and all model management features are active.
-- **Groq API mode:** Routes chat requests to [Groq](https://groq.com) using the OpenAI-compatible `/v1/chat/completions` endpoint. Enter your Groq API key in the key field and click Apply. Server controls and the Ollama Manager button are hidden in this mode since no local Ollama instance is needed.
+- **Groq API mode:** Routes chat requests to [Groq](https://groq.com) via `groq_client.py` using the OpenAI-compatible endpoint. Enter and save your Groq API key (stored to `~/.ollama_gui/settings.json`; clearable via the 🗑 Clear button). Server controls and the Ollama Manager button are hidden in this mode. Supported models include Llama 4, Llama 3.x, Mixtral, Gemma, DeepSeek-R1, and vision-capable variants.
 
 Switching modes is instant and non-destructive — conversation history and RAG state are preserved across mode switches.
 
 ### Hamburger Menu (☰)
 
-The `☰` button in the top-left opens a slide-out drawer panel containing:
+The `☰` button opens a slide-out drawer panel containing:
 
 - **Knowledge (RAG)** — attach files and folders for document-grounded answers.
 - **Crews** — create and manage multi-agent pipelines.
-- **Ollama Manager** — launch the Ollama Manager window *(visible only in Local mode; hidden automatically when Groq API mode is active)*.
+- **Ollama Manager** — launch the Ollama Manager window *(visible only in Local mode; hidden in Groq API mode; disabled/dimmed when the server is OFF)*.
+
+### Chat Navigation Popup
+
+The conversation title button in the top bar opens a **popup chat list** (`Qt.Popup` frame) positioned directly below it. The popup contains a live-search field and the full conversation list — clicking any entry switches instantly without navigating away from the chat view.
+
+### Theme
+
+A **Dark / Light theme toggle** (🌙 / ☀️) button switches the entire UI stylesheet at runtime. The selected theme is persisted to `~/.ollama_gui/settings.json` alongside the Groq API key and last-used model, all of which are restored automatically on next launch.
+
+### Chat Rendering — `chat_renderer.py`
+
+AI responses are rendered as **styled HTML** in a `QTextBrowser` widget via `chat_renderer.py`, which converts markdown to HTML without any JS dependency:
+
+- Headers (`#` → `######`), bold/italic/strikethrough, inline code
+- Fenced code blocks with a language label and a **📋 Copy** button (JS-free `copy:N` anchor scheme with direct clipboard integration)
+- Tables, bullet and numbered lists, blockquotes, horizontal rules
+- Theme-aware background and border colours
+
+### Attachments — `attachment_handler.py`
+
+The 📎 attach button accepts any file type and processes it into model-ready content:
+
+| Input | Behaviour |
+|-------|-----------|
+| **Images** (PNG, JPG, WEBP, …) | Base64-encoded and sent as vision content parts |
+| **Code / text files** | Injected as fenced code blocks (60 KB cap per file) |
+| **ZIP archives** | Treated as a **project session** — the full file tree is shown to the model every message; individual files are extracted on demand and injected as context |
+
+Up to 30 files are processed per ZIP. The active ZIP session persists across multiple messages until cleared.
+
+### Vision Models
+
+When images are attached, `SmartChatWorker` auto-selects a vision-capable model:
+
+- **Local mode:** Detects vision models from the Ollama model list by name keywords (`llava`, `vision`, `moondream`, `phi3-v`, `minicpm-v`). Falls back gracefully with a warning if no vision model is available.
+- **Groq mode:** Vision-capable Groq models (`llama-4-scout`, `llama-4-maverick`, `llama-3.2-*-vision-preview`) are flagged in `groq_client.py` and selected automatically.
+
+### Code Execution — `code_runner.py`
+
+AI-generated fenced code blocks can be **executed in a subprocess** via `CodeRunWorker`. Supported languages: Python, JavaScript/Node, Bash/Shell, Zsh, Ruby, TypeScript, C, C++, Go, Rust, Java, PHP, Perl, Lua, R. Each execution runs in a temp file with a **15-second timeout**. Output streams back to the chat via `pyqtSignal`.
 
 ### Architecture
 
-The GUI is split into six focused modules, each with a single responsibility:
+The GUI is split into focused modules, each with a single responsibility:
 
 ```
 gui/
-├── main.py             Main window — layout, event wiring, theme
-├── ollama_client.py    Ollama REST API client (streaming chat, model list, embed)
-├── database.py         SQLite store — conversations, messages, crews
-├── rag_engine.py       FAISS RAG — document loading, chunking, embedding, search
-├── workers.py          QThread workers — DirectChat, CrewChat, RAGBuild
-├── crew_dialogs.py     Crew configuration dialog + built-in templates
-└── _syspath_patch.py   PyInstaller path fix (injects system site-packages)
+├── main.py                 Main window — layout, mode toggle, theme, chat popup
+├── ollama_client.py        Ollama REST API client (streaming chat, model list, embed)
+├── groq_client.py          Groq API client — streaming chat, model list, vision detection
+├── chat_renderer.py        Markdown → styled HTML renderer for QTextBrowser
+├── attachment_handler.py   Universal file processor — images, code, zip project context
+├── code_runner.py          Fenced code block executor (15+ languages, subprocess)
+├── database.py             SQLite store — conversations, messages, crews
+├── rag_engine.py           FAISS RAG — document loading, chunking, embedding, search
+├── workers.py              QThread workers — DirectChat, CrewChat, RAGBuild,
+│                           GroqChatWorker, SmartChatWorker, CodeRunWorker
+├── crew_dialogs.py         Crew configuration dialog + built-in templates
+├── ollama_manager.py       Ollama install/upgrade/uninstall + model manager
+└── _syspath_patch.py       PyInstaller frozen binary sys.path fix
 ```
 
 All blocking operations — AI inference, document indexing, service polling — run in **QThread workers** and communicate back to the main thread exclusively through `pyqtSignal`. The UI never blocks.
@@ -215,10 +259,9 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 
 **Binary management:** Detects the installed Ollama version via `ollama --version`, fetches the latest release tag from the GitHub API, and can trigger an in-place upgrade via the same official install script used by `ollama-main`.
 
-- Before any privileged operation (install / upgrade / uninstall), a **sudo password dialog** prompts the user for credentials. Root users bypass the dialog automatically.
-- The entire `install.sh` is executed as root via `sudo -kS sh -c "curl -fsSL https://ollama.com/install.sh | sh"` — the password is passed once via stdin so all internal `sudo` calls inside the script inherit the root context without prompting again.
-- For uninstall, `SUDO_ASKPASS` is set in the subprocess environment so `systemctl` and `rm -rf` calls all authenticate without a TTY.
-- The **Ollama Manager button** in the `☰` drawer is disabled (visually dimmed with a dark stylesheet) when the Ollama server is OFF, and re-enabled when it is ON. The button is hidden entirely when Groq API mode is active.
+- Before any privileged operation (install / upgrade / uninstall), a **sudo password dialog** prompts the user. Root users bypass it automatically.
+- The entire `install.sh` runs as root via `sudo -kS sh -c "curl -fsSL https://ollama.com/install.sh | sh"` — password passed once via stdin so all internal `sudo` calls inside the script inherit root context without re-prompting.
+- The Ollama Manager button is disabled (dimmed) when the server is OFF, and hidden entirely in Groq API mode.
 
 **Authentication:** Reads `~/.ollama/config` and `~/.config/ollama/config` to detect a logged-in username. Supports login and logout via `ollama login` / `ollama logout` subprocess calls with credential entry fields in the UI.
 
@@ -226,20 +269,23 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 
 - Default window size **1800 × 900**
 - Base font size **28 px UI / 26 px monospace** — optimised for high-DPI displays and accessibility
-- Dark theme applied consistently via Qt stylesheet
-- Left panel fixed at **560 px** width with explicit min/max bounds; chat area takes remaining space
+- **Dark / Light theme toggle** — switches the entire Qt stylesheet at runtime; preference persisted to `~/.ollama_gui/settings.json`
+- Full-width chat layout — no fixed left panel; conversation list accessed via the title popup button
 - All interactive controls have `setMinimumHeight(60–64 px)` for comfortable use with trackpads and touch
+- `QTextBrowser` used for chat display (HTML rendering); `QTextEdit` retained for input only — preserves non-Latin (Bengali, Arabic, etc.) input rendering
 
 ### Dependencies
 
 | Package | Role |
 |---------|------|
 | `PyQt5 >= 5.15` | GUI framework |
-| `requests >= 2.28` | Ollama REST API, GitHub version check |
+| `requests >= 2.28` | Ollama REST API, Groq API, GitHub version check |
 | `sentence-transformers >= 2.2` | HuggingFace embedding backend |
 | `faiss-cpu >= 1.7` | Vector index for RAG |
 | `pypdf >= 3.0` | PDF document loading |
 | `python-docx >= 1.0` | DOCX document loading |
+
+> **Groq API** requires no additional package — uses `requests` directly. Get a free key at [console.groq.com](https://console.groq.com).
 
 ---
 
@@ -560,30 +606,36 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 ### Data Flow — GUI Chat with RAG
 
 ```
-User types query
+User types query (+ optional attachments)
        │
        ▼
 OllamaGUI._send_message()
+       │
+       ├─ Attachments? ─images──► base64-encode via attachment_handler.py
+       │               ─text/zip─► inject as fenced code blocks in user message
        │
        ├─ RAG enabled? ──yes──► RAGIndex.search(query, k=5)
        │                              │
        │                         FAISS IndexFlatIP.search()
        │                              │
-       │                         top-k chunk texts + source filenames
+       │                         inject top-k chunk texts into system prompt
+       │
+       ├─ Local mode? ─────────► SmartChatWorker (QThread)
        │                              │
-       │                         inject into system prompt as context
+       │                    images? → auto-select vision model
+       │                              │
+       │                    OllamaClient.chat_stream → HTTP POST /api/chat
+       │                              │
+       │                    token → pyqtSignal [flushed every 120ms]
+       │
+       └─ Groq mode? ──────────► GroqChatWorker (QThread)
+                                      │
+                             GroqClient → POST /openai/v1/chat/completions
+                                      │
+                             streamed tokens → pyqtSignal
        │
        ▼
-DirectChatWorker (QThread)
-       │
-       ├── OllamaClient.chat_stream(model, full_history + current_msg)
-       │          │
-       │     HTTP POST /api/chat — streaming NDJSON
-       │          │
-       │     token → buf → pyqtSignal("token")  [flushed every 120ms]
-       │
-       ▼
-QTextEdit.append() on main thread (via queued signal connection)
+chat_renderer.chat_html() → QTextBrowser.setHtml()
        │
        ▼
 SQLiteDB.save_message(conversation_id, role, content)
@@ -752,12 +804,17 @@ ollama-forge/
 ├── README.md
 │
 ├── gui/                        PyQt5 desktop chat + manager
-│   ├── main.py                 Main window — layout, event wiring, theme
-│   ├── ollama_manager.py       Service/model manager window
+│   ├── main.py                 Main window — layout, mode toggle, theme, chat popup
 │   ├── ollama_client.py        Ollama REST API client
+│   ├── groq_client.py          Groq API client (streaming, vision, model list)
+│   ├── chat_renderer.py        Markdown → styled HTML for QTextBrowser
+│   ├── attachment_handler.py   File/image/ZIP processor for model injection
+│   ├── code_runner.py          AI code block executor (15+ languages)
+│   ├── ollama_manager.py       Ollama install/upgrade/uninstall + model manager
 │   ├── database.py             SQLite conversation and crew store
 │   ├── rag_engine.py           FAISS RAG engine (no LangChain)
-│   ├── workers.py              QThread workers — DirectChat, CrewChat, RAGBuild
+│   ├── workers.py              QThread workers — DirectChat, CrewChat, RAGBuild,
+│   │                           GroqChatWorker, SmartChatWorker, CodeRunWorker
 │   ├── crew_dialogs.py         Multi-agent crew configuration UI
 │   ├── _syspath_patch.py       PyInstaller frozen binary sys.path fix
 │   └── requirements.txt
