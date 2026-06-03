@@ -237,7 +237,7 @@ class OllamaGUI(QMainWindow):
         self.crew_list.customContextMenuRequested.connect(self._crew_menu)
         v.addWidget(self.crew_list, 2)
 
-        self.mgr_btn = QPushButton("🦙 Model Manager")
+        self.mgr_btn = QPushButton("🦙 Ollama Manager")
         self.mgr_btn.setMinimumHeight(70)
         self.mgr_btn.clicked.connect(self._open_manager)
         self.mgr_btn.setStyleSheet(
@@ -260,7 +260,7 @@ class OllamaGUI(QMainWindow):
         self.drawer_btn.setFixedWidth(72)
         self.drawer_btn.setMinimumHeight(60)
         self.drawer_btn.setObjectName("drawerBtn")
-        self.drawer_btn.setToolTip("RAG · Crews · Model Manager")
+        self.drawer_btn.setToolTip("RAG · Crews · Ollama Manager")
         self.drawer_btn.clicked.connect(self._toggle_drawer)
         chat_sel_row.addWidget(self.drawer_btn)
 
@@ -654,7 +654,7 @@ class OllamaGUI(QMainWindow):
                     break
 
     def _toggle_drawer(self):
-        """Show/hide the left-panel drawer (RAG, Crews, Model Manager)."""
+        """Show/hide the left-panel drawer (RAG, Crews, Ollama Manager)."""
         if self._left_panel.isVisible():
             self._left_panel.hide()
             return

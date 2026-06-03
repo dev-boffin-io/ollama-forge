@@ -25,8 +25,45 @@ from PyQt5.QtCore    import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QProgressBar, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
+
+# ── Persistent config ─────────────────────────────────────────────────────────
+_CONFIG_DIR    = os.path.join(os.path.expanduser("~"), ".ollama_gui")
+_SETTINGS_FILE = os.path.join(_CONFIG_DIR, "settings.json")
+
+def _load_ollama_bin() -> str:
+    try:
+        with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("ollama_bin", "")
+    except Exception:
+        return ""
+
+def _save_ollama_bin(path: str):
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+    try:
+        data: dict = {}
+        try:
+            with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+        data["ollama_bin"] = path
+        with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def _autodetect_ollama() -> str:
+    found = shutil.which("ollama")
+    if found:
+        return found
+    for p in ("/usr/local/bin/ollama", "/usr/bin/ollama",
+              os.path.expanduser("~/bin/ollama"),
+              "/data/data/com.termux/files/usr/bin/ollama"):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +117,123 @@ class _SubprocWorker(QThread):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pure helpers (no Qt)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ManageWorker(QThread):
+    line        = pyqtSignal(str)
+    finished_ok = pyqtSignal()
+
+    _GITHUB_API   = "https://api.github.com/repos/ollama/ollama/releases/latest"
+    _FALLBACK_API = "https://api.github.com/repos/ollama/ollama/releases"
+    _INSTALL_CMD  = "curl -fsSL https://ollama.com/install.sh | sh"
+    _OLLAMA_PATHS = [
+        "/usr/local/bin/ollama", "/usr/local/lib/ollama",
+        "/usr/share/ollama", "/etc/systemd/system/ollama.service",
+        "/etc/systemd/system/ollama.service.d",
+    ]
+
+    def __init__(self, command, ollama_bin="ollama"):
+        super().__init__()
+        self.command = command
+        self._ollama_bin = ollama_bin
+        self._cancelled = False
+
+    def stop(self): self._cancelled = True
+
+    def run(self):
+        try:
+            getattr(self, f"_cmd_{self.command}")()
+        except Exception as exc:
+            self.line.emit(f"Error: {exc}")
+        self.finished_ok.emit()
+
+    def _emit(self, msg): self.line.emit(msg)
+    def _sudo(self): return [] if os.geteuid() == 0 else ["sudo"]
+
+    def _current_ver(self):
+        try:
+            r = subprocess.run([self._ollama_bin, "--version"],
+                               capture_output=True, text=True)
+            m = re.search(r"(\d+\.\d+\.\d+(?:[-\w\.]+)?)", r.stdout + r.stderr)
+            return m.group(1) if m else None
+        except FileNotFoundError:
+            return None
+
+    def _latest_ver(self):
+        import requests as _req
+        hdrs = {"Accept": "application/vnd.github+json"}
+        for url in (self._GITHUB_API, self._FALLBACK_API):
+            try:
+                r = _req.get(url, headers=hdrs, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    tag = (data["tag_name"] if isinstance(data, dict)
+                           else data[0]["tag_name"])
+                    return tag.lstrip("v")
+            except Exception:
+                pass
+        return None
+
+    def _stream_shell(self, cmd):
+        proc = subprocess.Popen(
+            ["sh", "-c", cmd], stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for ln in proc.stdout:
+            if self._cancelled:
+                proc.terminate(); return
+            self._emit(ln.rstrip())
+        proc.wait()
+
+    def _cmd_update(self):
+        cur = self._current_ver()
+        lat = self._latest_ver()
+        self._emit(f"Current version: {cur or 'not installed'}")
+        self._emit(f"Latest version : {lat or 'unknown (network error)'}")
+        if cur and lat:
+            from packaging import version as _v
+            if _v.parse(cur) < _v.parse(lat):
+                self._emit("Update available — use Upgrade Ollama.")
+            else:
+                self._emit("Already up to date.")
+
+    def _cmd_install(self):
+        if self._current_ver():
+            self._emit("Ollama already installed."); return
+        self._emit("Installing via official install.sh...")
+        self._stream_shell(self._INSTALL_CMD)
+
+    def _cmd_upgrade(self):
+        cur = self._current_ver()
+        lat = self._latest_ver()
+        if not cur:
+            self._emit("Not installed, installing...")
+            self._stream_shell(self._INSTALL_CMD); return
+        if not lat:
+            self._emit("Cannot reach GitHub. Aborted."); return
+        from packaging import version as _v
+        if _v.parse(cur) >= _v.parse(lat):
+            self._emit(f"Already latest ({cur})."); return
+        self._emit(f"Upgrading {cur} to {lat}...")
+        self._stream_shell(self._INSTALL_CMD)
+
+    def _cmd_uninstall(self):
+        cur = self._current_ver()
+        if not cur:
+            self._emit("Ollama is not installed."); return
+        prefix = self._sudo()
+        r = subprocess.run(["systemctl","is-active","--quiet","ollama"], capture_output=True)
+        if r.returncode == 0:
+            subprocess.run(prefix + ["systemctl","stop","ollama"])
+            subprocess.run(prefix + ["systemctl","disable","ollama"])
+            self._emit("Stopped ollama.service")
+        existing = [p for p in self._OLLAMA_PATHS if os.path.exists(p)]
+        if existing:
+            subprocess.run(prefix + ["rm","-rf"] + existing)
+            self._emit(f"Removed: {', '.join(existing)}")
+        if any("systemd" in p for p in existing):
+            subprocess.run(prefix + ["systemctl","daemon-reload"], capture_output=True)
+        self._emit("Ollama removed.")
+
 def _safe_remove(path):
     try:
         os.remove(path)
@@ -147,6 +301,11 @@ class OllamaManager(QMainWindow):
         self._serve_proc     = None
         self._signin_proc    = None
         self._poll_tmr       = None
+        self._active_manage_worker = None
+
+        # Ollama binary path (user-configurable)
+        saved = _load_ollama_bin()
+        self._ollama_bin = saved if saved else (_autodetect_ollama() or "ollama")
 
         self._build_ui()
 
@@ -169,11 +328,26 @@ class OllamaManager(QMainWindow):
     def _build_ui(self):
         root = QWidget()
         self.setCentralWidget(root)
-        h = QHBoxLayout(root)
+        v = QVBoxLayout(root)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setMinimumHeight(600)
+
+        # Tab 1 — Models (original left+right layout)
+        models_tab = QWidget()
+        h = QHBoxLayout(models_tab)
         h.setSpacing(28)
         h.setContentsMargins(12, 12, 12, 12)
         h.addWidget(self._left_panel(), 0)
         h.addWidget(self._right_panel(), 1)
+        self.tabs.addTab(models_tab, "🦙 Models")
+
+        # Tab 2 — Install / Upgrade / Uninstall
+        self.tabs.addTab(self._manage_tab(), "⚙️ Manage")
+
+        v.addWidget(self.tabs)
         self._theme()
 
     def _left_panel(self):
@@ -383,6 +557,191 @@ class OllamaManager(QMainWindow):
         v.addLayout(r)
         return w
 
+    def _manage_tab(self) -> QWidget:
+        """Tab 2 — Install / Upgrade / Check version / Uninstall Ollama."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(18)
+        v.setContentsMargins(24, 24, 24, 24)
+
+        # ── Path config ──────────────────────────────────────────────
+        path_lbl = QLabel("🗂 Ollama Binary Path:")
+        path_lbl.setObjectName("secLabel")
+        v.addWidget(path_lbl)
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(8)
+        self.ollama_path_edit = QLineEdit()
+        self.ollama_path_edit.setMinimumHeight(56)
+        self.ollama_path_edit.setPlaceholderText("/usr/local/bin/ollama")
+        self.ollama_path_edit.setText(self._ollama_bin)
+        path_row.addWidget(self.ollama_path_edit, 1)
+
+        self.btn_path_auto = QPushButton("🔍 Auto")
+        self.btn_path_auto.setMinimumHeight(56)
+        self.btn_path_auto.setMinimumWidth(120)
+        self.btn_path_auto.setToolTip("Auto-detect ollama binary location")
+        self.btn_path_auto.clicked.connect(self._manage_path_auto)
+        path_row.addWidget(self.btn_path_auto)
+
+        self.btn_path_browse = QPushButton("📁 Browse")
+        self.btn_path_browse.setMinimumHeight(56)
+        self.btn_path_browse.setMinimumWidth(140)
+        self.btn_path_browse.clicked.connect(self._manage_path_browse)
+        path_row.addWidget(self.btn_path_browse)
+
+        self.btn_path_save = QPushButton("✔ Save")
+        self.btn_path_save.setMinimumHeight(56)
+        self.btn_path_save.setMinimumWidth(110)
+        self.btn_path_save.clicked.connect(self._manage_path_save)
+        path_row.addWidget(self.btn_path_save)
+        v.addLayout(path_row)
+
+        # separator
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setObjectName("sepLine"); v.addWidget(sep)
+
+        # ── Version info row ─────────────────────────────────────────
+        self.lbl_cur_ver = QLabel("Installed version:  —")
+        self.lbl_lat_ver = QLabel("Latest version:  —")
+        self.lbl_cur_ver.setObjectName("secLabel")
+        self.lbl_lat_ver.setObjectName("secLabel")
+        ver_row.addWidget(self.lbl_cur_ver)
+        ver_row.addStretch()
+        ver_row.addWidget(self.lbl_lat_ver)
+        v.addLayout(ver_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(14)
+        self.btn_chk_ver   = QPushButton("🔍 Check Version")
+        self.btn_install   = QPushButton("⬇ Install Ollama")
+        self.btn_upgrade   = QPushButton("⬆ Upgrade Ollama")
+        self.btn_uninstall = QPushButton("🗑 Uninstall Ollama")
+        for b in (self.btn_chk_ver, self.btn_install,
+                  self.btn_upgrade, self.btn_uninstall):
+            b.setMinimumHeight(80)
+            btn_row.addWidget(b)
+        self.btn_uninstall.setObjectName("dangerBtn")
+        self.btn_chk_ver  .clicked.connect(self._manage_check_version)
+        self.btn_install  .clicked.connect(self._manage_install)
+        self.btn_upgrade  .clicked.connect(self._manage_upgrade)
+        self.btn_uninstall.clicked.connect(self._manage_uninstall)
+        v.addLayout(btn_row)
+
+        lbl_log = QLabel("📜 Output"); lbl_log.setObjectName("secLabel")
+        v.addWidget(lbl_log, 0, Qt.AlignCenter)
+        self.manage_log = QTextEdit()
+        self.manage_log.setReadOnly(True)
+        self.manage_log.setObjectName("logArea")
+        v.addWidget(self.manage_log, 1)
+
+        self.btn_manage_cancel = QPushButton("⛔ Cancel")
+        self.btn_manage_cancel.setMinimumHeight(70)
+        self.btn_manage_cancel.setObjectName("dangerBtn")
+        self.btn_manage_cancel.setVisible(False)
+        self.btn_manage_cancel.clicked.connect(self._manage_cancel)
+        v.addWidget(self.btn_manage_cancel)
+
+        QTimer.singleShot(300, self._manage_check_version)
+        return w
+
+    def _manage_path_auto(self):
+        found = _autodetect_ollama()
+        if found:
+            self.ollama_path_edit.setText(found)
+            self._manage_log_append(f"✅ Auto-detected: {found}")
+        else:
+            self._manage_log_append("⚠️ Could not auto-detect ollama binary.")
+
+    def _manage_path_browse(self):
+        from PyQt5.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Ollama Binary", "/usr/local/bin", "All Files (*)")
+        if path:
+            self.ollama_path_edit.setText(path)
+
+    def _manage_path_save(self):
+        path = self.ollama_path_edit.text().strip()
+        if not path:
+            self._manage_log_append("⚠️ Path is empty."); return
+        if not os.path.isfile(path):
+            self._manage_log_append(f"⚠️ File not found: {path}")
+        self._ollama_bin = path
+        _save_ollama_bin(path)
+        self._manage_log_append(f"✅ Saved path: {path}")
+
+    def _manage_log_append(self, text: str):
+        self.manage_log.append(text.rstrip())
+        sb = self.manage_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _manage_set_busy(self, busy: bool):
+        for b in (self.btn_chk_ver, self.btn_install,
+                  self.btn_upgrade, self.btn_uninstall):
+            b.setEnabled(not busy)
+        self.btn_manage_cancel.setVisible(busy)
+
+    def _manage_check_version(self):
+        self._manage_log_append("🔍 Checking versions…")
+        self._manage_set_busy(True)
+        self._active_manage_worker = _ManageWorker("update", self._ollama_bin)
+        self._active_manage_worker.line.connect(self._on_manage_line)
+        self._active_manage_worker.finished_ok.connect(
+            lambda: self._manage_set_busy(False))
+        self._active_manage_worker.start()
+
+    def _manage_install(self):
+        self._manage_log_append("⬇ Installing Ollama…")
+        self._manage_set_busy(True)
+        self._active_manage_worker = _ManageWorker("install", self._ollama_bin)
+        self._active_manage_worker.line.connect(self._on_manage_line)
+        self._active_manage_worker.finished_ok.connect(self._after_manage_action)
+        self._active_manage_worker.start()
+
+    def _manage_upgrade(self):
+        self._manage_log_append("⬆ Upgrading Ollama…")
+        self._manage_set_busy(True)
+        self._active_manage_worker = _ManageWorker("upgrade", self._ollama_bin)
+        self._active_manage_worker.line.connect(self._on_manage_line)
+        self._active_manage_worker.finished_ok.connect(self._after_manage_action)
+        self._active_manage_worker.start()
+
+    def _manage_uninstall(self):
+        from PyQt5.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Uninstall Ollama",
+            "This will remove Ollama and all its files.\nAre you sure?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        self._manage_log_append("🗑 Uninstalling Ollama…")
+        self._manage_set_busy(True)
+        self._active_manage_worker = _ManageWorker("uninstall", self._ollama_bin)
+        self._active_manage_worker.line.connect(self._on_manage_line)
+        self._active_manage_worker.finished_ok.connect(self._after_manage_action)
+        self._active_manage_worker.start()
+
+    def _manage_cancel(self):
+        w = getattr(self, "_active_manage_worker", None)
+        if w and w.isRunning():
+            w.terminate(); w.wait(1000)
+        self._manage_set_busy(False)
+        self._manage_log_append("⚠️ Cancelled.")
+
+    def _on_manage_line(self, line: str):
+        if "Current version:" in line:
+            self.lbl_cur_ver.setText(
+                "Installed version:  " + line.split(":", 1)[-1].strip())
+        elif "Latest version" in line:
+            self.lbl_lat_ver.setText(
+                "Latest version:  " + line.split(":", 1)[-1].strip())
+        self._manage_log_append(line)
+
+    def _after_manage_action(self):
+        self._manage_set_busy(False)
+        QTimer.singleShot(500, self._manage_check_version)
+        QTimer.singleShot(600, self._load_models)
+
     @staticmethod
     def _sep():
         f = QFrame()
@@ -410,6 +769,20 @@ class OllamaManager(QMainWindow):
                 background:#6e1717; color:#ffa198; border-color:#8b1a1a;
             }
             QPushButton#cancelBtn:hover{ background:#8b1a1a; }
+            QPushButton#dangerBtn{
+                background:#6e1717; color:#ffa198;
+                border:1px solid #8b1a1a; border-radius:8px;
+            }
+            QPushButton#dangerBtn:hover{ background:#8b1a1a; }
+            QTabWidget::pane{ border:1px solid #30363d; border-radius:8px; }
+            QTabBar::tab{
+                background:#161b22; color:#8b949e;
+                padding:10px 28px; font-size:26px;
+                border:1px solid #30363d;
+                border-bottom:none; border-radius:6px 6px 0 0;
+            }
+            QTabBar::tab:selected{ background:#1f2a3a; color:#79b8ff; font-weight:bold; }
+            QTabBar::tab:hover{ background:#1a2030; }
             QLineEdit, QTextEdit {
                 background:#161b22; color:#c9d1d9;
                 border:1px solid #30363d; border-radius:7px;
