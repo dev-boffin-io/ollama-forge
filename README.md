@@ -29,7 +29,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 | Component | Binary | Role |
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
-| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` · `Ollama-ai-manager` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, conversation history, crew multi-agent mode |
+| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, conversation history, crew multi-agent mode, and optional Groq API backend |
 | [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + Chainlit web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
@@ -103,6 +103,23 @@ ollama-main uninstall   # Stop service, disable systemd unit, remove all paths
 `Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt5**. It communicates with a locally running Ollama server via its REST API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without any cloud dependency or LangChain.
 
 The companion window `Ollama-ai-manager` handles the operational side: Ollama service control, model management, authentication, and binary updates.
+
+### API Mode Toggle — Local vs Groq
+
+The GUI supports two backend modes switchable at runtime via the **Local / Groq API** toggle button in the toolbar:
+
+- **Local mode (default):** Sends all inference requests to a locally running `ollama serve` instance. The server status button, Ollama Manager, and all model management features are active.
+- **Groq API mode:** Routes chat requests to [Groq](https://groq.com) using the OpenAI-compatible `/v1/chat/completions` endpoint. Enter your Groq API key in the key field and click Apply. Server controls and the Ollama Manager button are hidden in this mode since no local Ollama instance is needed.
+
+Switching modes is instant and non-destructive — conversation history and RAG state are preserved across mode switches.
+
+### Hamburger Menu (☰)
+
+The `☰` button in the top-left opens a slide-out drawer panel containing:
+
+- **Knowledge (RAG)** — attach files and folders for document-grounded answers.
+- **Crews** — create and manage multi-agent pipelines.
+- **Ollama Manager** — launch the Ollama Manager window *(visible only in Local mode; hidden automatically when Groq API mode is active)*.
 
 ### Architecture
 
@@ -197,6 +214,11 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 **Model management:** Lists all installed models with size and quantisation metadata. Pull new models by name with a live progress bar (parses percentage suffixes from streaming output via regex). Delete models with a confirmation dialog. The model list auto-refreshes after pull/delete operations complete.
 
 **Binary management:** Detects the installed Ollama version via `ollama --version`, fetches the latest release tag from the GitHub API, and can trigger an in-place upgrade via the same official install script used by `ollama-main`.
+
+- Before any privileged operation (install / upgrade / uninstall), a **sudo password dialog** prompts the user for credentials. Root users bypass the dialog automatically.
+- The entire `install.sh` is executed as root via `sudo -kS sh -c "curl -fsSL https://ollama.com/install.sh | sh"` — the password is passed once via stdin so all internal `sudo` calls inside the script inherit the root context without prompting again.
+- For uninstall, `SUDO_ASKPASS` is set in the subprocess environment so `systemctl` and `rm -rf` calls all authenticate without a TTY.
+- The **Ollama Manager button** in the `☰` drawer is disabled (visually dimmed with a dark stylesheet) when the Ollama server is OFF, and re-enabled when it is ON. The button is hidden entirely when Groq API mode is active.
 
 **Authentication:** Reads `~/.ollama/config` and `~/.config/ollama/config` to detect a logged-in username. Supports login and logout via `ollama login` / `ollama logout` subprocess calls with credential entry fields in the UI.
 
