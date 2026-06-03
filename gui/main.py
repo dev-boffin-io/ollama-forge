@@ -24,6 +24,7 @@ from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
 from PyQt5.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFrame,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QProgressBar,
@@ -144,40 +145,28 @@ class OllamaGUI(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
 
-        root.addWidget(self._build_left_panel(), 0)
+        # Build left panel widgets (needed for RAG/Crews), then wrap in a
+        # popup drawer — toggled by the ☰ button in the chat selector row.
+        self._left_panel = self._build_left_panel()
+        self._left_panel.setWindowFlags(Qt.Popup)
+        self._left_panel.setMinimumWidth(540)
+        self._left_panel.setMaximumWidth(620)
+        self._left_panel.hide()
+
         root.addLayout(self._build_right_panel(), 1)
 
         self._apply_theme()
 
-    # ---- Left panel -------------------------------------------- #
+    # ---- Left panel (drawer) ------------------------------------ #
     def _build_left_panel(self) -> QWidget:
         w = QWidget()
         w.setMinimumWidth(480)
         w.setMaximumWidth(680)
-        w.setFixedWidth(560)
         v = QVBoxLayout(w)
         v.setSpacing(10)
         v.setContentsMargins(10, 14, 10, 14)
-
-        # ── Chats ──
-        v.addWidget(QLabel("<b>💬 Chats</b>"))
-        self.new_chat_btn = QPushButton("➕ New Chat")
-        self.new_chat_btn.setMinimumHeight(64)
-        self.new_chat_btn.clicked.connect(self._new_chat)
-        v.addWidget(self.new_chat_btn)
-
-        self.chat_search = QLineEdit()
-        self.chat_search.setPlaceholderText("🔍 Search…")
-        self.chat_search.setClearButtonEnabled(True)
-        self.chat_search.textChanged.connect(self._filter_convs)
-        v.addWidget(self.chat_search)
-
-        self.conv_list = QListWidget()
-        self.conv_list.itemClicked.connect(self._load_conversation)
-        self.conv_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.conv_list.customContextMenuRequested.connect(self._conv_menu)
-        v.addWidget(self.conv_list, 2)
 
         # ── RAG ──
         v.addWidget(QLabel("<b>📚 Knowledge (RAG)</b>"))
@@ -262,6 +251,55 @@ class OllamaGUI(QMainWindow):
     # ---- Right panel -------------------------------------------- #
     def _build_right_panel(self) -> QHBoxLayout:
         v = QVBoxLayout()
+
+        # ── Chat selector row ────────────────────────────────────────
+        chat_sel_row = QHBoxLayout()
+        chat_sel_row.setSpacing(6)
+
+        self.drawer_btn = QPushButton("☰")
+        self.drawer_btn.setFixedWidth(72)
+        self.drawer_btn.setMinimumHeight(60)
+        self.drawer_btn.setObjectName("drawerBtn")
+        self.drawer_btn.setToolTip("RAG · Crews · Model Manager")
+        self.drawer_btn.clicked.connect(self._toggle_drawer)
+        chat_sel_row.addWidget(self.drawer_btn)
+
+        self.new_chat_btn = QPushButton("➕ New Chat")
+        self.new_chat_btn.setMinimumHeight(60)
+        self.new_chat_btn.setMinimumWidth(200)
+        self.new_chat_btn.clicked.connect(self._new_chat)
+        chat_sel_row.addWidget(self.new_chat_btn)
+
+        self.chat_title_btn = QPushButton("💬  —")
+        self.chat_title_btn.setMinimumHeight(60)
+        self.chat_title_btn.setObjectName("chatTitleBtn")
+        self.chat_title_btn.clicked.connect(self._toggle_chat_popup)
+        chat_sel_row.addWidget(self.chat_title_btn, 1)
+        v.addLayout(chat_sel_row)
+
+        # ── Chat list popup (hidden by default) ──────────────────────
+        self._chat_popup = QFrame()
+        self._chat_popup.setObjectName("chatPopup")
+        self._chat_popup.setWindowFlags(Qt.Popup)
+        self._chat_popup.setFixedWidth(640)
+        popup_v = QVBoxLayout(self._chat_popup)
+        popup_v.setContentsMargins(6, 6, 6, 6)
+        popup_v.setSpacing(4)
+        # Search inside popup
+        self.chat_search = QLineEdit()
+        self.chat_search.setPlaceholderText("🔍 Search…")
+        self.chat_search.setClearButtonEnabled(True)
+        self.chat_search.setMinimumHeight(52)
+        self.chat_search.textChanged.connect(self._filter_convs)
+        popup_v.addWidget(self.chat_search)
+        self.conv_list = QListWidget()
+        self.conv_list.setMinimumHeight(500)
+        self.conv_list.setMaximumHeight(800)
+        self.conv_list.itemClicked.connect(self._on_popup_item_clicked)
+        self.conv_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.conv_list.customContextMenuRequested.connect(self._conv_menu)
+        popup_v.addWidget(self.conv_list)
+        self._chat_popup.hide()
 
         # Top bar
         top = QHBoxLayout()
@@ -452,6 +490,14 @@ class OllamaGUI(QMainWindow):
                 QPushButton#apiToggleBtn:hover { background:#153b6e; }
                 QPushButton#apiToggleBtn[api="true"] { background:#7b3fa0; color:white; font-weight:bold; }
                 QPushButton#apiToggleBtn[api="true"]:hover { background:#5e2e7a; }
+                QPushButton#chatTitleBtn { background:#1e2736; color:#a8c4e8;
+                    border:1px solid #2a3a52; text-align:left; padding-left:14px; }
+                QPushButton#chatTitleBtn:hover { background:#253040; }
+                QPushButton#drawerBtn { background:#2a2d36; color:#e0e0e0;
+                    font-size:28px; border:1px solid #3a3d48; border-radius:8px; }
+                QPushButton#drawerBtn:hover { background:#363a45; }
+                QFrame#chatPopup { background:#1a1e2a; border:1px solid #2a3a52;
+                    border-radius:8px; }
                         """)
         else:
             self.setStyleSheet(base + f"""
@@ -487,6 +533,14 @@ class OllamaGUI(QMainWindow):
                 QPushButton#apiToggleBtn:hover {{ background:#153b6e; }}
                 QPushButton#apiToggleBtn[api="true"] {{ background:#7b3fa0; color:white; font-weight:bold; }}
                 QPushButton#apiToggleBtn[api="true"]:hover {{ background:#5e2e7a; }}
+                QPushButton#chatTitleBtn {{ background:#e8f0fe; color:#1a4f8f;
+                    border:1px solid #b8cef8; text-align:left; padding-left:14px; }}
+                QPushButton#chatTitleBtn:hover {{ background:#d2e3fc; }}
+                QPushButton#drawerBtn {{ background:#e8edf5; color:#1a1a2e;
+                    font-size:28px; border:1px solid #c8cdd4; border-radius:8px; }}
+                QPushButton#drawerBtn:hover {{ background:#d8e0ec; }}
+                QFrame#chatPopup {{ background:#ffffff; border:1px solid #c8cdd4;
+                    border-radius:8px; }}
                         """)
 
     def _toggle_theme(self):
@@ -590,6 +644,43 @@ class OllamaGUI(QMainWindow):
 
     def _refresh_conversations(self):
         self._filter_convs()
+        # Keep title button in sync with current conversation
+        if self.current_conv_id:
+            for i in range(self.conv_list.count()):
+                item = self.conv_list.item(i)
+                if item.data(Qt.UserRole) == self.current_conv_id:
+                    title = item.text().lstrip("📌 ").strip()
+                    self.chat_title_btn.setText(f"💬  {title}")
+                    break
+
+    def _toggle_drawer(self):
+        """Show/hide the left-panel drawer (RAG, Crews, Model Manager)."""
+        if self._left_panel.isVisible():
+            self._left_panel.hide()
+            return
+        btn = self.drawer_btn
+        pos = btn.mapToGlobal(btn.rect().bottomLeft())
+        self._left_panel.move(pos)
+        self._left_panel.adjustSize()
+        self._left_panel.show()
+        self._left_panel.raise_()
+
+    def _toggle_chat_popup(self):
+        """Show/hide the scrollable chat list popup below the title button."""
+        if self._chat_popup.isVisible():
+            self._chat_popup.hide()
+            return
+        # Position popup below the title button
+        btn = self.chat_title_btn
+        pos = btn.mapToGlobal(btn.rect().bottomLeft())
+        self._chat_popup.move(pos)
+        self._chat_popup.adjustSize()
+        self._chat_popup.show()
+        self._chat_popup.raise_()
+
+    def _on_popup_item_clicked(self, item: QListWidgetItem):
+        self._chat_popup.hide()
+        self._load_conversation(item)
 
     def _new_chat(self):
         self.current_conv_id = None
@@ -598,10 +689,13 @@ class OllamaGUI(QMainWindow):
         self._code_store = []
         self._is_streaming = False
         self.chat.clear()
+        self.chat_title_btn.setText("💬  New Chat")
         self._update_stop_btn(False)
 
     def _load_conversation(self, item):
         self.current_conv_id = item.data(Qt.UserRole)
+        title = item.text().lstrip("📌 ").strip()
+        self.chat_title_btn.setText(f"💬  {title}")
         self._chat_log = []
         self._code_store = []
         self._is_streaming = False
@@ -1088,6 +1182,7 @@ class OllamaGUI(QMainWindow):
             title = prompt[:40] + ("…" if len(prompt) > 40 else "")
             with QMutexLocker(self.db_mutex):
                 self.current_conv_id = self.db.create_conversation(title)
+            self.chat_title_btn.setText(f"💬  {title}")
             self._refresh_conversations()
 
         with QMutexLocker(self.db_mutex):
