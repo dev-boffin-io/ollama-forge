@@ -9,6 +9,7 @@ Ollama-ai-gui
 Ollama-ai-manager
 ollama-main
 da
+bin/
 
 # Distribution / packaging
 .Python

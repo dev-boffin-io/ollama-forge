@@ -9,7 +9,6 @@ Clean architecture:
   crew_dialogs.py   — Crew config UI
   main.py           — This file: GUI only
 """
-import _syspath_patch  # noqa: F401 — must be first, injects system site-packages into frozen binary
 import base64
 import copy
 import glob
@@ -20,9 +19,9 @@ import sys
 import threading
 import time
 
-from PyQt5.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
-from PyQt5.QtGui import QFont, QFontDatabase, QTextCursor
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
+from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
+from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame,
     QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -40,6 +39,7 @@ from workers import (
 from groq_client import GroqClient
 from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
+from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
 
 
 # Persistent settings file — stores theme and Groq API key
@@ -110,6 +110,10 @@ class OllamaGUI(QMainWindow):
 
         self._load_settings()   # overwrite defaults with persisted values
 
+        # ── Ollama binary path ───────────────────────────────────────
+        _saved_bin       = load_ollama_bin()
+        self._ollama_bin = _saved_bin if _saved_bin else (autodetect_ollama() or "ollama")
+
         # ── Chat rendering ───────────────────────────────────────────
         self._chat_log:    list[dict] = []   # {type, content, label?}
         self._code_store:  list[str]  = []   # code blocks for copy
@@ -150,7 +154,7 @@ class OllamaGUI(QMainWindow):
         # Build left panel widgets (needed for RAG/Crews), then wrap in a
         # popup drawer — toggled by the ☰ button in the chat selector row.
         self._left_panel = self._build_left_panel()
-        self._left_panel.setWindowFlags(Qt.Popup)
+        self._left_panel.setWindowFlags(Qt.WindowType.Popup)
         self._left_panel.setMinimumWidth(540)
         self._left_panel.setMaximumWidth(620)
         self._left_panel.hide()
@@ -233,7 +237,7 @@ class OllamaGUI(QMainWindow):
 
         self.crew_list = QListWidget()
         self.crew_list.itemClicked.connect(self._select_crew)
-        self.crew_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.crew_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.crew_list.customContextMenuRequested.connect(self._crew_menu)
         v.addWidget(self.crew_list, 2)
 
@@ -284,7 +288,7 @@ class OllamaGUI(QMainWindow):
         # ── Chat list popup (hidden by default) ──────────────────────
         self._chat_popup = QFrame()
         self._chat_popup.setObjectName("chatPopup")
-        self._chat_popup.setWindowFlags(Qt.Popup)
+        self._chat_popup.setWindowFlags(Qt.WindowType.Popup)
         self._chat_popup.setFixedWidth(640)
         popup_v = QVBoxLayout(self._chat_popup)
         popup_v.setContentsMargins(6, 6, 6, 6)
@@ -300,7 +304,7 @@ class OllamaGUI(QMainWindow):
         self.conv_list.setMinimumHeight(500)
         self.conv_list.setMaximumHeight(800)
         self.conv_list.itemClicked.connect(self._on_popup_item_clicked)
-        self.conv_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.conv_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.conv_list.customContextMenuRequested.connect(self._conv_menu)
         popup_v.addWidget(self.conv_list)
         self._chat_popup.hide()
@@ -356,7 +360,7 @@ class OllamaGUI(QMainWindow):
         groq_layout.addWidget(QLabel("🔑 Groq API Key:"))
         self.groq_key_input = QLineEdit()
         self.groq_key_input.setPlaceholderText("gsk_… (paste your Groq API key)")
-        self.groq_key_input.setEchoMode(QLineEdit.Password)
+        self.groq_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.groq_key_input.setMinimumHeight(56)
         if self.groq_api_key:
             self.groq_key_input.setText(self.groq_api_key)
@@ -643,7 +647,7 @@ class OllamaGUI(QMainWindow):
                 continue
             prefix = "📌 " if c["pinned"] else ""
             item = QListWidgetItem(prefix + (c["title"] or f"Chat {c['id']}"))
-            item.setData(Qt.UserRole, c["id"])
+            item.setData(Qt.ItemDataRole.UserRole, c["id"])
             self.conv_list.addItem(item)
 
     def _refresh_conversations(self):
@@ -652,7 +656,7 @@ class OllamaGUI(QMainWindow):
         if self.current_conv_id:
             for i in range(self.conv_list.count()):
                 item = self.conv_list.item(i)
-                if item.data(Qt.UserRole) == self.current_conv_id:
+                if item.data(Qt.ItemDataRole.UserRole) == self.current_conv_id:
                     title = item.text().lstrip("📌 ").strip()
                     self.chat_title_btn.setText(f"💬  {title}")
                     break
@@ -697,7 +701,7 @@ class OllamaGUI(QMainWindow):
         self._update_stop_btn(False)
 
     def _load_conversation(self, item):
-        self.current_conv_id = item.data(Qt.UserRole)
+        self.current_conv_id = item.data(Qt.ItemDataRole.UserRole)
         title = item.text().lstrip("📌 ").strip()
         self.chat_title_btn.setText(f"💬  {title}")
         self._chat_log = []
@@ -719,12 +723,12 @@ class OllamaGUI(QMainWindow):
         item = self.conv_list.itemAt(pos)
         if not item:
             return
-        cid = item.data(Qt.UserRole)
+        cid = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu()
         r_act = menu.addAction("✏ Rename")
         p_act = menu.addAction("📌 Pin/Unpin")
         d_act = menu.addAction("🗑 Delete")
-        action = menu.exec_(self.conv_list.mapToGlobal(pos))
+        action = menu.exec(self.conv_list.mapToGlobal(pos))
         if action == r_act:
             t, ok = QInputDialog.getText(self, "Rename", "New title:")
             if ok and t.strip():
@@ -844,7 +848,7 @@ class OllamaGUI(QMainWindow):
         self._log(f"❌ RAG error: {err}")
 
     def _clear_rag(self):
-        if QMessageBox.question(self, "Clear RAG", "Delete all knowledge?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Clear RAG", "Delete all knowledge?") != QMessageBox.StandardButton.Yes:
             return
         self._rag_index().clear()
         self._rag = None
@@ -882,7 +886,7 @@ class OllamaGUI(QMainWindow):
             prefix = "⭐ " if crew["is_default"] else ""
             item = QListWidgetItem(f"{prefix}{crew['name']} ({len(cfg)} agents)")
             item.setToolTip(" | ".join(a["role"] for a in cfg))
-            item.setData(Qt.UserRole, crew["id"])
+            item.setData(Qt.ItemDataRole.UserRole, crew["id"])
             self.crew_list.addItem(item)
         self._update_crew_btn()
 
@@ -899,7 +903,7 @@ class OllamaGUI(QMainWindow):
         self.crew_btn.style().polish(self.crew_btn)
 
     def _select_crew(self, item):
-        cid = item.data(Qt.UserRole)
+        cid = item.data(Qt.ItemDataRole.UserRole)
         crew = self.db.get_crew(cid)
         self.current_crew_cfg  = json.loads(crew["config"])
         self.current_crew_id   = cid
@@ -911,7 +915,7 @@ class OllamaGUI(QMainWindow):
         dialog = CrewConfigDialog(
             [m["name"] for m in self.models], parent=self
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         name, cfg = dialog.get_crew_data()
         if name and cfg:
@@ -929,7 +933,7 @@ class OllamaGUI(QMainWindow):
         dialog = CrewConfigDialog(
             [m["name"] for m in self.models], cfg, crew["name"], self
         )
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         name, new_cfg = dialog.get_crew_data()
         if name and new_cfg:
@@ -944,7 +948,7 @@ class OllamaGUI(QMainWindow):
         crew = self.db.get_crew(crew_id)
         if QMessageBox.question(
             self, "Delete", f"Delete crew '{crew['name']}'?"
-        ) == QMessageBox.Yes:
+        ) == QMessageBox.StandardButton.Yes:
             self.db.delete_crew(crew_id)
             if crew_id == self.current_crew_id:
                 self.current_crew_cfg  = []
@@ -972,7 +976,7 @@ class OllamaGUI(QMainWindow):
         item = self.crew_list.itemAt(pos)
         menu = QMenu()
         if item:
-            cid = item.data(Qt.UserRole)
+            cid = item.data(Qt.ItemDataRole.UserRole)
             menu.addAction("⭐ Set Default").triggered.connect(
                 lambda: self._set_default_crew(cid)
             )
@@ -984,7 +988,7 @@ class OllamaGUI(QMainWindow):
             )
         else:
             menu.addAction("➕ Create Crew").triggered.connect(self._create_crew)
-        menu.exec_(self.crew_list.mapToGlobal(pos))
+        menu.exec(self.crew_list.mapToGlobal(pos))
 
     def _load_template(self):
         names = [t["name"] for t in CREW_TEMPLATES]
@@ -998,7 +1002,7 @@ class OllamaGUI(QMainWindow):
             [m["name"] for m in self.models],
             tmpl["config"], tmpl["name"], self
         )
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             new_name, cfg = dialog.get_crew_data()
             if new_name and cfg:
                 self.db.create_crew(new_name, cfg)
@@ -1313,7 +1317,7 @@ class OllamaGUI(QMainWindow):
         if doc.isEmpty():
             return   # document was cleared; cursor position would be invalid
         cursor = self.chat.textCursor()
-        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(text)
         self.chat.setTextCursor(cursor)
         self.chat.ensureCursorVisible()
@@ -1680,13 +1684,13 @@ class OllamaGUI(QMainWindow):
         def _do_start():
             try:
                 self._server_proc = subprocess.Popen(
-                    ["ollama", "serve"],
+                    [self._ollama_bin, "serve"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
             except FileNotFoundError:
                 QTimer.singleShot(0, lambda: self._log(
-                    "❌ 'ollama' not found in PATH.\n"
+                    f"❌ ollama not found: {self._ollama_bin}\n"
                 ))
                 QTimer.singleShot(0, self._on_server_failed)
                 return
@@ -1735,7 +1739,16 @@ class OllamaGUI(QMainWindow):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
 
         # ── Try compiled manager binary first ───────────────────────
-        for name in ("Ollama-ai-manager", "Ollama-ai-manager.exe"):
+        # Candidate names: arch-suffixed first, then plain, then Windows
+        import platform as _plat
+        _arch = _plat.machine().lower()
+        _suffix = "-arm64" if _arch == "aarch64" else ""  # AMD64 binary has no suffix
+        _mgr_candidates = []
+        if _suffix:
+            _mgr_candidates.append(f"Ollama-ai-manager{_suffix}")
+        _mgr_candidates += ["Ollama-ai-manager", "Ollama-ai-manager.exe"]
+
+        for name in _mgr_candidates:
             candidate = os.path.join(exe_dir, name)
             if os.path.isfile(candidate):
                 subprocess.Popen([candidate])
@@ -1748,17 +1761,21 @@ class OllamaGUI(QMainWindow):
         except NameError:
             src_dir = exe_dir
 
-        py_file = os.path.join(src_dir, "ollama_manager.py")
+        py_file = os.path.join(src_dir, "manager_entry.py")
         if os.path.isfile(py_file):
             subprocess.Popen([sys.executable, py_file])
             return
 
         # ── Nothing found ───────────────────────────────────────────
+        import platform as _plat
+        _a = _plat.machine().lower()
+        _sfx = "-arm64" if _a == "aarch64" else ""  # AMD64 has no suffix
+        _expected = f"Ollama-ai-manager{_sfx}" if _sfx else "Ollama-ai-manager"
         QMessageBox.critical(
             self, "Not Found",
             "Manager not found.\n\n"
             f"Expected one of:\n"
-            f"  {os.path.join(exe_dir, 'Ollama-ai-manager')}\n"
+            f"  {os.path.join(exe_dir, _expected)}\n"
             f"  {py_file}"
         )
 
@@ -1828,8 +1845,8 @@ class OllamaGUI(QMainWindow):
 
     # Ctrl+Enter sends
     def keyPressEvent(self, event):
-        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
-                and event.modifiers() == Qt.ControlModifier):
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
             self._send()
         else:
             super().keyPressEvent(event)
@@ -1837,14 +1854,12 @@ class OllamaGUI(QMainWindow):
 
 # ====================================================================
 if __name__ == "__main__":
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
 
     # Set application-level font with Bengali fallback chain.
     # Using QApplication.setFont() is the only reliable way to enable
     # non-Latin glyph rendering in all widgets (including QTextEdit input).
-    _db = QFontDatabase()
-    _families = set(_db.families())
+    _families = set(QFontDatabase.families())
     _BENGALI_CHAIN = [
         "Noto Sans Bengali", "Noto Serif Bengali",
         "Kalpurush", "SolaimanLipi", "Lohit Bengali",
@@ -1853,7 +1868,7 @@ if __name__ == "__main__":
     ]
     _primary = next((f for f in _BENGALI_CHAIN if f in _families), "")
     _app_font = QFont(_primary, 14)   # size overridden by QSS per-widget
-    _app_font.setStyleHint(QFont.SansSerif)
+    _app_font.setStyleHint(QFont.StyleHint.SansSerif)
     try:
         _app_font.setFamilies([f for f in _BENGALI_CHAIN if f in _families] or ["Sans Serif"])
     except AttributeError:
@@ -1862,4 +1877,4 @@ if __name__ == "__main__":
 
     win = OllamaGUI()
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -9,7 +9,7 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name            = "ollama-forge"
 version         = "1.0.0"
-description     = "Local AI toolkit — Ollama CLI manager, PyQt5 GUI chat, and AI DevOps assistant"
+description     = "Local AI toolkit — Ollama CLI manager, PyQt6 GUI chat, and AI DevOps assistant"
 readme          = "README.md"
 license         = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ authors = [
 
 keywords = [
     "ollama", "local-ai", "llm", "rag",
-    "pyqt5", "devops", "forge-suite",
+    "pyqt6", "devops", "forge-suite",
 ]
 
 classifiers = [
@@ -55,7 +55,9 @@ dependencies = [
 [project.optional-dependencies]
 
 gui = [
-    "PyQt5>=5.15",
+    "PyQt6>=6.6.0",
+    "PyQt6-Qt6>=6.6.0",
+    "PyQt6-sip>=13.6.0",
     "requests>=2.28",
     "sentence-transformers>=2.2",
     "faiss-cpu>=1.7",

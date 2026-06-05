@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Crew configuration dialog + built-in templates.
+crew_dialogs.py — Crew configuration dialog + built-in templates.
+PyQt6: exec_() → exec(), StandardButton enums.
 """
-import json
+from __future__ import annotations
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QLabel, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QTextEdit, QVBoxLayout, QWidget,
 )
 
 CREW_TEMPLATES = [
     {"name": "Research Crew", "config": [
-        {"role": "Researcher",  "model": "llama3.2:latest",
+        {"role": "Researcher",    "model": "llama3.2:latest",
          "system_prompt": "You are an expert researcher.",
          "input_prompt": "Research this topic thoroughly:\n{previous}"},
-        {"role": "Analyst",     "model": "llama3.2:latest",
+        {"role": "Analyst",       "model": "llama3.2:latest",
          "system_prompt": "Analyse the findings critically.",
          "input_prompt": "{previous}"},
         {"role": "Report Writer", "model": "llama3.2:latest",
@@ -48,8 +49,8 @@ CREW_TEMPLATES = [
 
 
 class CrewConfigDialog(QDialog):
-    def __init__(self, models: list[str], config=None,
-                 crew_name: str = "", parent=None):
+    def __init__(self, models: list[str], config: list[dict] | None = None,
+                 crew_name: str = "", parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Crew" if config else "Create Crew")
         self.setMinimumSize(900, 600)
@@ -57,7 +58,6 @@ class CrewConfigDialog(QDialog):
         self._agent_widgets: list[dict] = []
 
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("<b>Crew Name:</b>"))
         self.name_edit = QLineEdit(crew_name)
         layout.addWidget(self.name_edit)
@@ -73,7 +73,10 @@ class CrewConfigDialog(QDialog):
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll, 1)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
@@ -81,20 +84,19 @@ class CrewConfigDialog(QDialog):
         for agent in (config or [{}]):
             self.add_agent(agent)
 
-    def add_agent(self, preset: dict | None = None):
+    def add_agent(self, preset: dict | None = None) -> None:
         frame = QWidget()
         frame.setStyleSheet(
             "background:#222;border:1px solid #555;"
             "border-radius:8px;padding:10px;margin:6px;"
         )
         form = QFormLayout(frame)
-
-        role   = QLineEdit()
+        role  = QLineEdit()
         role.setPlaceholderText("e.g. Researcher")
-        model  = QComboBox()
+        model = QComboBox()
         model.addItems(self.models or ["llama3.2:latest"])
-        sys_p  = QTextEdit(); sys_p.setFixedHeight(70)
-        inp    = QTextEdit(); inp.setFixedHeight(110)
+        sys_p = QTextEdit(); sys_p.setFixedHeight(70)
+        inp   = QTextEdit(); inp.setFixedHeight(110)
         inp.setPlaceholderText("Use {previous} to pass prior output")
 
         if preset:
@@ -110,21 +112,23 @@ class CrewConfigDialog(QDialog):
         form.addRow("System Prompt:",  sys_p)
         form.addRow("Input Template:", inp)
 
-        # Remove button
         rm_btn = QPushButton("🗑 Remove Agent")
         rm_btn.setFixedHeight(32)
 
         def _remove():
-            self._agent_widgets = [w for w in self._agent_widgets if w["frame"] is not frame]
+            self._agent_widgets = [
+                w for w in self._agent_widgets if w["frame"] is not frame
+            ]
             frame.setParent(None)
             frame.deleteLater()
 
         rm_btn.clicked.connect(_remove)
         form.addRow("", rm_btn)
 
-        rec = {"role": role, "model": model, "sys": sys_p,
-               "inp": inp, "frame": frame}
-        self._agent_widgets.append(rec)
+        self._agent_widgets.append({
+            "role": role, "model": model,
+            "sys": sys_p, "inp": inp, "frame": frame,
+        })
         self._scroll_layout.addWidget(frame)
 
     def get_crew_data(self) -> tuple[str | None, list | None]:
@@ -132,7 +136,6 @@ class CrewConfigDialog(QDialog):
         if not name:
             QMessageBox.warning(self, "Error", "Crew name is required.")
             return None, None
-
         config = []
         for w in self._agent_widgets:
             role = w["role"].text().strip()
@@ -143,9 +146,9 @@ class CrewConfigDialog(QDialog):
             if "{previous}" not in inp:
                 r = QMessageBox.question(
                     self, "Warning",
-                    f"Agent '{role}' has no {{previous}} placeholder. Continue?"
+                    f"Agent '{role}' has no {{previous}} placeholder. Continue?",
                 )
-                if r == QMessageBox.No:
+                if r == QMessageBox.StandardButton.No:
                     return None, None
             config.append({
                 "role":          role,
