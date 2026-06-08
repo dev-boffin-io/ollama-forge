@@ -257,7 +257,9 @@ class SmartChatWorker(_StopMixin, QThread):
                  text_injection: str = "",
                  api_mode: bool = False,
                  api_key: str = "",
-                 available_models: list[dict] = None):
+                 available_models: list[dict] = None,
+                 rag_index=None,
+                 rag_query: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.model            = model
@@ -267,6 +269,8 @@ class SmartChatWorker(_StopMixin, QThread):
         self.api_mode         = api_mode
         self.api_key          = api_key
         self.available_models = available_models or []
+        self.rag_index        = rag_index   # RAGIndex or None
+        self.rag_query        = rag_query   # query string for RAG search
 
         if api_mode:
             self._groq   = GroqClient(api_key=api_key)
@@ -306,6 +310,24 @@ class SmartChatWorker(_StopMixin, QThread):
         chunks   = 0
 
         msgs = list(self.messages)
+
+        # ── RAG search on worker thread (never on GUI thread) ────────
+        if self.rag_index and not self.rag_index.is_empty and self.rag_query:
+            try:
+                rag_results = self.rag_index.search(self.rag_query, k=5)
+                if rag_results:
+                    rag_ctx = "\n\n---\n".join(rag_results)
+                    sys_rag = (
+                        "Use ONLY these facts if relevant. "
+                        "If unsure, say \'not found in knowledge base\':\n\n"
+                        + rag_ctx
+                    )
+                    # Insert after memory system msg (if any) else at 0
+                    insert_at = 1 if msgs and msgs[0].get("role") == "system" else 0
+                    msgs.insert(insert_at, {"role": "system", "content": sys_rag})
+            except Exception:
+                pass   # RAG failure must never crash the chat
+
         if not msgs or msgs[0].get("role") != "system":
             msgs.insert(0, {"role": "system", "content": _SYSTEM_PROMPT})
 

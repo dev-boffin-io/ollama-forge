@@ -110,24 +110,23 @@ def _is_ollama_model(name: str) -> bool:
 def _embed_ollama(texts: list[str], model: str) -> "np.ndarray":
     """
     Call Ollama embedding API.
-    Tries /api/embed (Ollama >=0.3) first — batched, faster.
-    Falls back to /api/embeddings (older) one-by-one if needed.
+    Tries /api/embed (>=0.3) first, then /api/embeddings fallback,
+    then sentence-transformers if Ollama is unavailable.
     """
     import numpy as np
     import requests
 
     BASE = "http://localhost:11434"
 
-    # ── Try new /api/embed (batch) ──────────────────────────────────
+    # ── Try new /api/embed (batch) ───────────────────────────────────
     try:
         r = requests.post(
             f"{BASE}/api/embed",
             json={"model": model, "input": texts},
-            timeout=120,
+            timeout=30,
         )
         if r.status_code == 200:
             data = r.json()
-            # Response key is "embeddings" (list of lists)
             vecs = data.get("embeddings") or data.get("embedding")
             if vecs:
                 arr = np.array(vecs, dtype="float32")
@@ -136,35 +135,93 @@ def _embed_ollama(texts: list[str], model: str) -> "np.ndarray":
     except Exception:
         pass
 
-    # ── Fallback: old /api/embeddings (one text at a time) ──────────
-    vecs = []
-    for text in texts:
-        r = requests.post(
-            f"{BASE}/api/embeddings",
-            json={"model": model, "prompt": text},
-            timeout=60,
-        )
-        r.raise_for_status()
-        vecs.append(r.json()["embedding"])
+    # ── Fallback: old /api/embeddings ───────────────────────────────
+    try:
+        vecs = []
+        for text in texts:
+            r = requests.post(
+                f"{BASE}/api/embeddings",
+                json={"model": model, "prompt": text},
+                timeout=30,
+            )
+            r.raise_for_status()
+            vecs.append(r.json()["embedding"])
+        arr = np.array(vecs, dtype="float32")
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        return arr / (norms + 1e-10)
+    except Exception:
+        pass
 
-    arr = np.array(vecs, dtype="float32")
-    norms = np.linalg.norm(arr, axis=1, keepdims=True)
-    return arr / (norms + 1e-10)
+    # ── Final fallback: sentence-transformers (no Ollama needed) ────
+    _ST_FALLBACK = "all-MiniLM-L6-v2"
+    return _embed_st(texts, _ST_FALLBACK)
+
+
+def _embed_hash_tfidf(texts: list[str], n_features: int = 4096) -> "np.ndarray":
+    """
+    Pure-numpy hashed TF-IDF fallback.
+    Fixed 4096-dim vectors via MD5 hash trick — no ML framework needed.
+    Works offline, inside frozen PyInstaller binary, anywhere.
+    """
+    import numpy as np
+    import hashlib
+
+    def _tok(text: str) -> list[str]:
+        import re
+        return re.findall(r"[\w\u0980-\u09FF]+", text.lower())
+
+    tokenized = [_tok(t) for t in texts]
+    n = len(tokenized)
+
+    # IDF over hashed features
+    doc_freq = np.zeros(n_features, dtype="float32")
+    for tokens in tokenized:
+        seen = set()
+        for tok in tokens:
+            h = int(hashlib.md5(tok.encode()).hexdigest(), 16) % n_features
+            if h not in seen:
+                doc_freq[h] += 1
+                seen.add(h)
+    idf = np.log((n + 1.0) / (doc_freq + 1.0)) + 1.0
+
+    mat = np.zeros((n, n_features), dtype="float32")
+    for i, tokens in enumerate(tokenized):
+        if not tokens:
+            continue
+        for tok in tokens:
+            h = int(hashlib.md5(tok.encode()).hexdigest(), 16) % n_features
+            mat[i, h] += 1.0
+        mat[i] /= len(tokens)   # TF
+
+    mat *= idf
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    return (mat / (norms + 1e-10)).astype("float32")
 
 
 def _embed_st(texts: list[str], model: str) -> "np.ndarray":
-    """Use sentence-transformers (HuggingFace) locally."""
+    """
+    sentence-transformers backend — requires torch.
+    Falls back to hashed TF-IDF if torch is not available
+    (e.g. in frozen PyInstaller binary without PyTorch bundled).
+    """
     import numpy as np
-    if model not in _st_cache:
-        from sentence_transformers import SentenceTransformer
-        _st_cache[model] = SentenceTransformer(model)
-    m = _st_cache[model]
-    vecs = m.encode(texts, show_progress_bar=False, convert_to_numpy=True)
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    return (vecs / (norms + 1e-10)).astype("float32")
+    try:
+        if model not in _st_cache:
+            from sentence_transformers import SentenceTransformer
+            _st_cache[model] = SentenceTransformer(model)
+        m = _st_cache[model]
+        vecs = m.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return (vecs / (norms + 1e-10)).astype("float32")
+    except (ImportError, Exception) as _err:
+        # torch / sentence-transformers not available — use hash TF-IDF
+        _no_torch_key = "__hash_tfidf__"
+        _st_cache[_no_torch_key] = True   # suppress repeated attempts
+        return _embed_hash_tfidf(texts)
 
 
 def _embed(texts: list[str], model_name: str) -> "np.ndarray":
+    """Route to Ollama or sentence-transformers based on model name."""
     if _is_ollama_model(model_name):
         return _embed_ollama(texts, model_name)
     return _embed_st(texts, model_name)
@@ -181,6 +238,7 @@ class RAGIndex:
         self.embed_model = embed_model
         self._index = None       # faiss index
         self._chunks: list[dict] = []   # [{text, source, hash}]
+        self._embed_dim: int | None = None
         _ensure_dir()
         self._load()
 
@@ -190,19 +248,35 @@ class RAGIndex:
             try:
                 faiss = _import_faiss()
                 with open(self.META_FILE, encoding="utf-8") as f:
-                    self._chunks = json.load(f)
+                    meta = json.load(f)
+                # Support both old format (list) and new format (dict)
+                if isinstance(meta, list):
+                    self._chunks = meta
+                    self._embed_dim = None
+                else:
+                    self._chunks = meta.get("chunks", [])
+                    self._embed_dim = meta.get("embed_dim")
+                    saved_model = meta.get("embed_model")
+                    if saved_model:
+                        self.embed_model = saved_model
                 self._index = faiss.read_index(self.INDEX_FILE)
                 return
             except Exception:
                 pass
         self._index = None
         self._chunks = []
+        self._embed_dim = None
 
     def _save(self):
         faiss = _import_faiss()
         faiss.write_index(self._index, self.INDEX_FILE)
+        meta = {
+            "chunks": self._chunks,
+            "embed_model": self.embed_model,
+            "embed_dim": self._index.d if self._index else None,
+        }
         with open(self.META_FILE, "w", encoding="utf-8") as f:
-            json.dump(self._chunks, f, ensure_ascii=False)
+            json.dump(meta, f, ensure_ascii=False)
 
     @property
     def is_empty(self) -> bool:
@@ -309,9 +383,21 @@ class RAGIndex:
             return []
         import numpy as np
         qvec = _embed([query], self.embed_model).astype("float32")
+        # Guard: dimension must match index — mismatch happens when embed
+        # backend changes (e.g. Ollama off → hash TF-IDF fallback)
+        idx_dim = self._index.d
+        q_dim   = qvec.shape[1]
+        if idx_dim != q_dim:
+            # Dimension mismatch — backend changed (e.g. Ollama off → TF-IDF).
+            # Never block GUI thread with re-embed. Return empty; user should
+            # clear and re-index with current backend.
+            return []
         k = min(k, len(self._chunks))
-        _, idxs = self._index.search(qvec, k)
-        return [self._chunks[i]["text"] for i in idxs[0] if i >= 0]
+        try:
+            _, idxs = self._index.search(qvec, k)
+            return [self._chunks[i]["text"] for i in idxs[0] if i >= 0]
+        except Exception:
+            return []
 
     # ---- maintenance -------------------------------------------- #
     def remove_source(self, source: str) -> int:

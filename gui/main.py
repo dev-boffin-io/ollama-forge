@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 
-from PyQt6.QtCore import Qt, QMutex, QMutexLocker, QTimer, QUrl
+from PyQt6.QtCore import Qt, QMutex, QMutexLocker, QMetaObject, QTimer, QUrl, pyqtSlot
 from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -40,6 +40,7 @@ from groq_client import GroqClient
 from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
 from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
+from notes_dialog import NotesPanel
 
 
 # Persistent settings file — stores theme and Groq API key
@@ -110,6 +111,9 @@ class OllamaGUI(QMainWindow):
 
         self._load_settings()   # overwrite defaults with persisted values
 
+        # ── Persistent Memory ────────────────────────────────────────
+        self._persistent_memory = False   # toggle: persistent vs session-only
+
         # ── Ollama binary path ───────────────────────────────────────
         _saved_bin       = load_ollama_bin()
         self._ollama_bin = _saved_bin if _saved_bin else (autodetect_ollama() or "ollama")
@@ -155,8 +159,6 @@ class OllamaGUI(QMainWindow):
         # popup drawer — toggled by the ☰ button in the chat selector row.
         self._left_panel = self._build_left_panel()
         self._left_panel.setWindowFlags(Qt.WindowType.Popup)
-        self._left_panel.setMinimumWidth(540)
-        self._left_panel.setMaximumWidth(620)
         self._left_panel.hide()
 
         root.addLayout(self._build_right_panel(), 1)
@@ -165,9 +167,24 @@ class OllamaGUI(QMainWindow):
 
     # ---- Left panel (drawer) ------------------------------------ #
     def _build_left_panel(self) -> QWidget:
+        # Outer container — full-height, holds the scroll area
+        outer = QWidget()
+        outer.setMinimumWidth(480)
+        outer.setMaximumWidth(680)
+        outer_v = QVBoxLayout(outer)
+        outer_v.setContentsMargins(0, 0, 0, 0)
+        outer_v.setSpacing(0)
+
+        # Scroll area wraps all inner content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        outer_v.addWidget(scroll)
+
+        # Inner widget inside scroll area
         w = QWidget()
-        w.setMinimumWidth(480)
-        w.setMaximumWidth(680)
+        scroll.setWidget(w)
         v = QVBoxLayout(w)
         v.setSpacing(10)
         v.setContentsMargins(10, 14, 10, 14)
@@ -241,6 +258,28 @@ class OllamaGUI(QMainWindow):
         self.crew_list.customContextMenuRequested.connect(self._crew_menu)
         v.addWidget(self.crew_list, 2)
 
+        # ── Notes ──
+        v.addWidget(QLabel("<b>📝 Notes</b>"))
+        self.notes_panel = NotesPanel(self.db, w)
+        self.notes_panel.note_to_chat.connect(self._paste_note_to_input)
+        v.addWidget(self.notes_panel, 2)
+
+        # ── Memory view ──
+        v.addWidget(QLabel("<b>🧠 Long-term Memory</b>"))
+        mem_hdr = QHBoxLayout()
+        mem_hdr.setSpacing(6)
+        self.mem_clear_btn = QPushButton("🗑 Clear All")
+        self.mem_clear_btn.setMinimumHeight(48)
+        self.mem_clear_btn.clicked.connect(self._clear_memories)
+        mem_hdr.addWidget(self.mem_clear_btn)
+        mem_hdr.addStretch()
+        v.addLayout(mem_hdr)
+        self.mem_list = QListWidget()
+        self.mem_list.setMaximumHeight(200)
+        self.mem_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.mem_list.customContextMenuRequested.connect(self._mem_list_menu)
+        v.addWidget(self.mem_list)
+
         self.mgr_btn = QPushButton("🦙 Ollama Manager")
         self.mgr_btn.setMinimumHeight(70)
         self.mgr_btn.clicked.connect(self._open_manager)
@@ -254,7 +293,7 @@ class OllamaGUI(QMainWindow):
         )
         v.addWidget(self.mgr_btn)
 
-        return w
+        return outer
 
     # ---- Right panel -------------------------------------------- #
     def _build_right_panel(self) -> QHBoxLayout:
@@ -344,6 +383,14 @@ class OllamaGUI(QMainWindow):
         self.api_toggle_btn.setMinimumWidth(180)
         self.api_toggle_btn.clicked.connect(self._toggle_api_mode)
         top.addWidget(self.api_toggle_btn)
+
+        self.mem_btn = QPushButton("💬 Session")
+        self.mem_btn.setObjectName("memBtn")
+        self.mem_btn.setMinimumHeight(60)
+        self.mem_btn.setMinimumWidth(220)
+        self.mem_btn.setToolTip("Toggle persistent long-term memory")
+        self.mem_btn.clicked.connect(self._toggle_memory_mode)
+        top.addWidget(self.mem_btn)
 
         self.server_btn = QPushButton("🟢 Server: ON")
         self.server_btn.setObjectName("srvBtn")
@@ -578,6 +625,7 @@ class OllamaGUI(QMainWindow):
             self.embed_box.addItems(_EMBED_FALLBACKS)
             self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.")
             self._restore_saved_model()
+            self._apply_memory_btn_state()
             return
 
         # ── Local Ollama mode ────────────────────────────────────────
@@ -622,6 +670,7 @@ class OllamaGUI(QMainWindow):
                 msg = f"⚠️ Ollama not reachable — {err[:120]}"
             self._log(msg)
         self._restore_saved_model()
+        self._apply_memory_btn_state()
 
     def _current_model_vision(self) -> bool:
         name = self.model_box.currentText()
@@ -662,14 +711,20 @@ class OllamaGUI(QMainWindow):
                     break
 
     def _toggle_drawer(self):
-        """Show/hide the left-panel drawer (RAG, Crews, Ollama Manager)."""
+        """Show/hide the left-panel drawer — full window height, scrollable."""
         if self._left_panel.isVisible():
             self._left_panel.hide()
             return
-        btn = self.drawer_btn
-        pos = btn.mapToGlobal(btn.rect().bottomLeft())
-        self._left_panel.move(pos)
-        self._left_panel.adjustSize()
+
+        # Position: top-left of main window, full window height
+        win_geo  = self.geometry()
+        win_pos  = self.mapToGlobal(self.rect().topLeft())
+        win_h    = win_geo.height()
+        panel_w  = 560   # fixed drawer width
+
+        self._left_panel.setFixedHeight(win_h)
+        self._left_panel.setFixedWidth(panel_w)
+        self._left_panel.move(win_pos)
         self._left_panel.show()
         self._left_panel.raise_()
 
@@ -1216,14 +1271,13 @@ class OllamaGUI(QMainWindow):
             for m in history[:-1]
         ]
 
-        # RAG injection
-        rag_ctx = self._rag_context(prompt)
-        if rag_ctx:
-            sys_rag = (
-                "Use ONLY these facts if relevant. "
-                "If unsure, say 'not found in knowledge base':\n\n" + rag_ctx
-            )
-            ollama_msgs.insert(0, {"role": "system", "content": sys_rag})
+        # Memory injection — persistent mode
+        mem_prefix = self._build_memory_prefix()
+        if mem_prefix:
+            ollama_msgs.insert(0, {"role": "system", "content": mem_prefix})
+
+        # RAG — search runs inside SmartChatWorker (not on GUI thread)
+        rag_index = self._rag if self._rag_has_data() else None
 
         ollama_msgs.append({"role": "user", "content": prompt})
 
@@ -1267,7 +1321,16 @@ class OllamaGUI(QMainWindow):
                 self._update_stop_btn(False)
                 return
             crew_cfg = copy.deepcopy(self.current_crew_cfg)
+            if mem_prefix:
+                crew_cfg[0]["system_prompt"] = (
+                    mem_prefix + "\n\n" + crew_cfg[0].get("system_prompt", "")
+                ).strip()
+            rag_ctx = self._rag_context(prompt)
             if rag_ctx:
+                sys_rag = (
+                    "Use ONLY these facts if relevant. "
+                    "If unsure, say \'not found in knowledge base\':\n\n" + rag_ctx
+                )
                 crew_cfg[0]["system_prompt"] = (
                     crew_cfg[0].get("system_prompt", "") + "\n\n" + sys_rag
                 ).strip()
@@ -1297,6 +1360,8 @@ class OllamaGUI(QMainWindow):
             api_mode         = self.api_mode,
             api_key          = self.groq_api_key,
             available_models = self.models,
+            rag_index        = rag_index,
+            rag_query        = prompt,
         )
         self.thread.token.connect(self._append_token)
         self.thread.finished.connect(self._on_done)
@@ -1332,6 +1397,8 @@ class OllamaGUI(QMainWindow):
                 self.db.add_message(
                     self.current_conv_id, "assistant", response
                 )
+            # Extract & store long-term memories (background, best-effort)
+            self._extract_and_store_memories(self.last_prompt, response)
             # Use tracked index — safe even if status items were appended after
             idx = self._streaming_ai_idx
             if 0 <= idx < len(self._chat_log):
@@ -1417,6 +1484,9 @@ class OllamaGUI(QMainWindow):
             if data.get("groq_api_key"):
                 self.groq_api_key = data["groq_api_key"]
             self._saved_model = data.get("selected_model", "")
+            # Restore persistent memory toggle
+            if data.get("persistent_memory", False):
+                self._persistent_memory = True
         except Exception:
             pass  # corrupt file — keep defaults, will be overwritten on next save
 
@@ -1430,6 +1500,19 @@ class OllamaGUI(QMainWindow):
             self.model_box.setCurrentIndex(idx)
             self.model_box.blockSignals(False)
 
+    def _apply_memory_btn_state(self) -> None:
+        """Apply correct button styling after UI is fully constructed."""
+        if self._persistent_memory:
+            self.mem_btn.setText("🧠 Persistent")
+            self.mem_btn.setStyleSheet(
+                "QPushButton{background:#1a4a6b;color:white;font-weight:bold;"
+                "border-radius:8px;padding:8px 14px;}"
+                "QPushButton:hover{background:#1a6b9b;}"
+            )
+        else:
+            self.mem_btn.setText("💬 Session")
+            self.mem_btn.setStyleSheet("")
+
     def _on_model_changed(self) -> None:
         """Persist the newly selected model immediately."""
         self._save_settings()
@@ -1441,6 +1524,7 @@ class OllamaGUI(QMainWindow):
             "dark": self.dark,
             "groq_api_key": self.groq_api_key,
             "selected_model": self.model_box.currentText(),
+            "persistent_memory": self._persistent_memory,
         }
         try:
             with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1726,6 +1810,229 @@ class OllamaGUI(QMainWindow):
     # ================================================================ #
     #  MODEL MANAGER                                                     #
     # ================================================================ #
+    # ================================================================ #
+    #  PERSISTENT MEMORY                                                 #
+    # ================================================================ #
+    def _toggle_memory_mode(self):
+        self._persistent_memory = not self._persistent_memory
+        self._apply_memory_btn_state()
+        self._save_settings()   # persist toggle across app restarts
+        if self._persistent_memory:
+            self._log("🧠 Persistent memory ON — key facts will be remembered across chats.\n")
+            self._refresh_mem_list()
+        else:
+            self._log("💬 Session-only mode — no facts saved.\n")
+
+    @pyqtSlot()
+    def _refresh_mem_list(self):
+        """Refresh the memory list widget in the left drawer."""
+        self.mem_list.clear()
+        for m in self.db.get_all_memories():
+            self.mem_list.addItem(f"🔑 {m['key']}: {m['value']}")
+
+    def _clear_memories(self):
+        from PyQt6.QtWidgets import QMessageBox
+        if QMessageBox.question(
+            self, "Clear Memories",
+            "Delete ALL long-term memories?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.clear_memories()
+            self._refresh_mem_list()
+            self._log("🗑 All long-term memories cleared.")
+
+    def _mem_list_menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        item = self.mem_list.itemAt(pos)
+        if not item:
+            return
+        idx = self.mem_list.row(item)
+        mems = self.db.get_all_memories()
+        if idx >= len(mems):
+            return
+        mem = mems[idx]
+        menu = QMenu(self)
+        menu.addAction("🗑 Delete this memory", lambda: self._delete_one_memory(mem["id"]))
+        menu.exec(self.mem_list.mapToGlobal(pos))
+
+    def _delete_one_memory(self, mem_id: int):
+        self.db.delete_memory(mem_id)
+        self._refresh_mem_list()
+
+    def _build_memory_prefix(self) -> str:
+        """
+        Return a combined system prompt: base behaviour + user memories.
+        Called by SmartChatWorker path — replaces default _SYSTEM_PROMPT
+        so we must include it here.
+        """
+        base = (
+            "You are a direct, precise AI assistant. "
+            "Answer without filler phrases like 'Sure!', 'Of course!', 'Great question!'. "
+            "Write clean, correct, runnable code when asked. "
+            "Use markdown formatting where it helps clarity. "
+            "Be concise and complete — no meta-commentary, no apologies, "
+            "no narration of what you are about to do."
+        )
+        mems = self.db.get_all_memories()
+        if not mems:
+            return ""          # empty → SmartChatWorker uses its own default
+        facts = "  \n".join(f"• {m['key'].title()}: {m['value']}" for m in mems)
+        memory_block = (
+            "\n\nYou also remember the following about this user from past conversations:\n"
+            + facts
+            + "\nUse this information naturally when relevant. "
+            "Do not mention that you are using stored memory."
+        )
+        return base + memory_block
+
+
+    def _extract_and_store_memories(self, user_msg: str, ai_reply: str):
+        """
+        Universal memory storage.
+        Personal facts: user_msg ONLY (আমি in AI reply = AI, not user).
+        World knowledge: ai_reply (procedures, tips, facts discussed).
+        """
+        if not self._persistent_memory:
+            return
+
+        # ── Strategy 1: Rule-based personal facts from USER only ─────
+        import re as _re
+        txt = user_msg.strip()
+
+        # Name patterns
+        name_pats = [
+            _re.compile(
+                r"(?:my name is|i(?:\'m| am) called|call me|i go by)"
+                r"\s+([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)?)", _re.I),
+            _re.compile(
+                r"(?:\u0986\u09ae\u09be\u09b0\s+\u09a8\u09be\u09ae|"
+                r"\u09a8\u09be\u09ae\s+\u0986\u09ae\u09be\u09b0)"
+                r"\s*([\u0980-\u09FF][\u0980-\u09FF\s]{1,30})", _re.U),
+        ]
+        for pat in name_pats:
+            m = pat.search(txt)
+            if m:
+                val = (m.group(1) if m.lastindex else m.group(0)).strip(".,। ")
+                if len(val) > 1:
+                    self.db.save_memory("name", val[:100], self.current_conv_id)
+
+        # Bengali occupation / study / location — user message only
+        # Strips leading "আমি" so stored value is clean
+        bn_rules = [
+            ("occupation",
+             _re.compile(r"([^।\n]{5,120}\u0995\u09be\u099c \u0995\u09b0\u09bf)", _re.U)),
+            ("studying",
+             _re.compile(r"([^।\n]{5,120}\u0995\u09cb\u09b0\u09cd\u09b8 \u0995\u09b0\u099b\u09bf)", _re.U)),
+            ("location",
+             _re.compile(r"([^।\n]{5,120}\u09a5\u09be\u0981\u0995\u09bf)", _re.U)),
+        ]
+        for key, pat in bn_rules:
+            m = pat.search(txt)
+            if m:
+                val = m.group(1).strip()
+                # Clean leading "আমি " (BI u0986u09AEu09BF u0020) — store the fact, not the pronoun
+                val = _re.sub(r"^\u0986\u09ae\u09bf\s+", "", val, flags=_re.U).strip(".,। ")
+                if len(val) > 2:
+                    self.db.save_memory(key, val[:200], self.current_conv_id)
+
+        # Age
+        age_m = _re.search(r"i(?:\'m| am)\s+(\d{1,2})\s+years?\s+old", txt, _re.I)
+        if age_m:
+            self.db.save_memory("age", age_m.group(1), self.current_conv_id)
+
+        from PyQt6.QtCore import QMetaObject
+        QMetaObject.invokeMethod(
+            self, "_refresh_mem_list", Qt.ConnectionType.QueuedConnection)
+
+        # ── Strategy 2: LLM extraction (background) ──────────────────
+        def _run():
+            import json as _json, requests as _req
+
+            # Pass 1: personal facts from USER message only
+            prompt_user = (
+                "Extract personal facts about the USER (name, age, job title, workplace, "
+                "skills, location, hobbies, goals). "
+                "Return ONLY JSON array: "
+                '[{"key":"job","value":"RACW Mechanic student"}]. '
+                "Return [] if nothing personal. No markdown.\n\n"
+                f"User said: {user_msg[:500]}"
+            )
+            # Pass 2: world/topic knowledge from AI reply
+            prompt_ai = (
+                "Extract useful factual knowledge, tips, or solutions from this ASSISTANT reply "
+                "that are worth remembering for future reference. "
+                "Do NOT extract anything where the assistant describes itself. "
+                "Return ONLY JSON array: "
+                '[{"key":"topic","value":"brief useful fact"}]. '
+                "Return [] if nothing worth storing. No markdown.\n\n"
+                f"Assistant said: {ai_reply[:500]}"
+            )
+
+            def _call_llm(prompt: str) -> list:
+                try:
+                    if self.api_mode and self.groq_api_key.strip():
+                        from groq_client import GroqClient
+                        raw = "".join(
+                            GroqClient(api_key=self.groq_api_key).chat_stream(
+                                self.model_box.currentText(),
+                                [{"role": "user", "content": prompt}],
+                            )
+                        )
+                    else:
+                        r = _req.post(
+                            "http://localhost:11434/api/chat",
+                            json={
+                                "model": self.model_box.currentText(),
+                                "messages": [{"role": "user", "content": prompt}],
+                                "stream": False,
+                            },
+                            timeout=25,
+                        )
+                        raw = r.json().get("message", {}).get("content", "")
+                    raw = raw.strip()
+                    s, e2 = raw.find("["), raw.rfind("]")
+                    if s != -1 and e2 != -1:
+                        return _json.loads(raw[s:e2+1])
+                except Exception:
+                    pass
+                return []
+
+            saved = 0
+            for facts in [_call_llm(prompt_user), _call_llm(prompt_ai)]:
+                for f in facts:
+                    if isinstance(f, dict) and f.get("key") and f.get("value"):
+                        k = str(f["key"]).strip()[:80]
+                        v = str(f["value"]).strip()[:400]
+                        # Skip if value starts with "I am" / "আমি" — likely AI self-description
+                        import re as _re2
+                        if _re2.match(r"^(i am|i\'m|\u0986\u09ae\u09bf)", v, _re2.I | _re2.U):
+                            continue
+                        if len(v) > 2:
+                            self.db.save_memory(k, v, self.current_conv_id)
+                            saved += 1
+
+            if saved:
+                QMetaObject.invokeMethod(
+                    self, "_refresh_mem_list",
+                    Qt.ConnectionType.QueuedConnection)
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+
+
+    def _paste_note_to_input(self, text: str):
+        """Insert note content into the chat input box."""
+        current = self.input.toPlainText()
+        sep = "\n\n" if current.strip() else ""
+
+
+        self.input.setPlainText(current + sep + text)
+        # Move cursor to end
+        cursor = self.input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.input.setTextCursor(cursor)
+        self._left_panel.hide()   # close drawer
+
     def _open_manager(self):
         """
         Launch ollama_manager.
