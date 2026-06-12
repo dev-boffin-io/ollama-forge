@@ -140,6 +140,18 @@ DA_EXCLUDED=(
     --exclude-module matplotlib
 )
 
+# ── Data files needed by main.py's _start_web() at runtime ─────────────────
+DA_DATA=(
+    --add-data "$DA_DIR/web_chat.py:."
+    --add-data "$DA_DIR/core:core"
+    --add-data "$DA_DIR/modules:modules"
+    --add-data "$DA_DIR/plugins:plugins"
+    --add-data "$DA_DIR/.chainlit:.chainlit"
+    --add-data "$DA_DIR/chainlit.md:."
+    --add-data "$DA_DIR/config/settings.json:config"
+    --add-data "$DA_DIR/public:public"
+)
+
 OLLAMA_HIDDEN=(
     --hidden-import requests
     --hidden-import packaging
@@ -172,6 +184,7 @@ cd "$DA_DIR"
     --clean \
     "${DA_HIDDEN[@]}" \
     "${DA_EXCLUDED[@]}" \
+    "${DA_DATA[@]}" \
     main.py
 
 [[ -f "$DA_DIR/dist/da" ]] || die "Build failed — da binary not found"
