@@ -1648,7 +1648,7 @@ class OllamaGUI(QMainWindow):
         # Left panel — Crews & manager
         self.new_crew_btn.setEnabled(effective)
         self.tmpl_btn.setEnabled(effective)
-        self.mgr_btn.setEnabled(running)
+        self.mgr_btn.setEnabled(True)  # Ollama Manager can launch/install Ollama even when the server is off
 
     def _poll_server(self):
         """
