@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dev-assist</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">⚡ <span>dev-assist</span></div>
+
+      <div class="settings">
+        <select id="engineSelect" title="AI Engine">
+          <option value="ollama">Ollama</option>
+          <option value="api">API</option>
+        </select>
+        <select id="modelSelect" title="Ollama Model"></select>
+      </div>
+
+      <div class="ollama-status">
+        <span id="statusDot" class="dot dot-unknown"></span>
+        <span id="statusText">checking…</span>
+        <button id="ollamaToggleBtn" class="btn small">…</button>
+        <button id="refreshBtn" class="btn small" title="Refresh status">🔄</button>
+      </div>
+
+      <button id="clearBtn" class="btn small" title="Clear chat">🗑️ Clear</button>
+    </header>
+
+    <main id="chatLog" class="chat-log"></main>
+
+    <footer class="composer">
+      <label class="attach-btn" title="Attach a file">
+        📎
+        <input type="file" id="fileInput" hidden>
+      </label>
+      <span id="fileName" class="file-name"></span>
+      <textarea id="input" placeholder="Type your message… (Ctrl+Enter to send)" rows="1"></textarea>
+      <button id="sendBtn" class="btn primary">Send</button>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

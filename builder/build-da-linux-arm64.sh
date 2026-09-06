@@ -76,7 +76,7 @@ if [[ -f "$DA_DIR/requirements.txt" ]]; then
     pip install --quiet -r "$DA_DIR/requirements.txt"
 else
     pip install --quiet \
-        chainlit crewai requests packaging \
+        fastapi uvicorn "python-multipart" crewai requests packaging \
         openai anthropic rich typer click httpx
 fi
 
@@ -90,8 +90,20 @@ ok "PyInstaller: $($PYINSTALLER_BIN --version)"
 mkdir -p "$OUT_DIR"
 
 DA_HIDDEN=(
-    --hidden-import chainlit
-    --hidden-import chainlit.cli
+    --hidden-import fastapi
+    --hidden-import uvicorn
+    --hidden-import uvicorn.logging
+    --hidden-import uvicorn.loops
+    --hidden-import uvicorn.loops.auto
+    --hidden-import uvicorn.protocols
+    --hidden-import uvicorn.protocols.http
+    --hidden-import uvicorn.protocols.http.auto
+    --hidden-import uvicorn.protocols.websockets
+    --hidden-import uvicorn.protocols.websockets.auto
+    --hidden-import uvicorn.lifespan
+    --hidden-import uvicorn.lifespan.on
+    --hidden-import multipart
+    --hidden-import starlette
     --hidden-import crewai
     --hidden-import crewai.agent
     --hidden-import crewai.task
@@ -126,18 +138,15 @@ DA_EXCLUDED=(
 )
 
 # ── Data files needed by main.py's _start_web() at runtime ─────────────────
-# web_chat.py runs as a subprocess via chainlit — main.py copies these
-# from sys._MEIPASS to a tmpdir. Without --add-data they're missing from
-# the frozen binary entirely.
+# web_app.py (FastAPI) runs in-process — main.py imports it directly from
+# sys._MEIPASS, so these files must be bundled as --add-data.
 DA_DATA=(
-    --add-data "$DA_DIR/web_chat.py:."
+    --add-data "$DA_DIR/web_app.py:."
     --add-data "$DA_DIR/core:core"
     --add-data "$DA_DIR/modules:modules"
     --add-data "$DA_DIR/plugins:plugins"
-    --add-data "$DA_DIR/.chainlit:.chainlit"
-    --add-data "$DA_DIR/chainlit.md:."
+    --add-data "$DA_DIR/webui:webui"
     --add-data "$DA_DIR/config/settings.json:config"
-    --add-data "$DA_DIR/public:public"
 )
 
 OLLAMA_HIDDEN=(

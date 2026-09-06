@@ -18,7 +18,9 @@ prompt-toolkit>=3.0
 jinja2>=3.1
 
 # ── Web UI (required for --web mode) ─────────────────────────────────────────
-chainlit>=2.0
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
 
 # ── Dev / Linting ────────────────────────────────────────────────────────────
 # ruff  black  isort  pyright  pre-commit  pytest  pytest-asyncio

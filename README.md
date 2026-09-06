@@ -30,7 +30,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
 | [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, Groq API backend, vision models, file/ZIP attachments, markdown rendering, and crew multi-agent mode |
-| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + Chainlit web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
+| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
 
@@ -291,7 +291,7 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 
 ## dev-assist
 
-`dev-assist` is a personal AI DevOps assistant designed for developer and sysadmin workflows. It runs as a **terminal REPL** with `rich` formatting and `prompt-toolkit` readline, or as a **Chainlit web UI** with full async streaming. It combines local AI inference, semantic code RAG, live shell execution, and specialised task modules in a single unified interface.
+`dev-assist` is a personal AI DevOps assistant designed for developer and sysadmin workflows. It runs as a **terminal REPL** with `rich` formatting and `prompt-toolkit` readline, or as a **FastAPI web UI** (plain HTML/JS frontend) with full async streaming — served in-process via uvicorn, so it packages into a single onefile binary with no external Python or Node.js dependency. It combines local AI inference, semantic code RAG, live shell execution, and specialised task modules in a single unified interface.
 
 ### Usage
 
@@ -299,7 +299,7 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 # Terminal REPL
 da
 
-# Chainlit web UI
+# FastAPI web UI
 da --web
 da --web --port 8080
 
@@ -338,7 +338,8 @@ da --web --port 8080
 ```
 dev-assist/
 ├── main.py                 CLI entry point — argument parsing, REPL loop
-├── web_chat.py             Chainlit web UI — async streaming handlers, auth
+├── web_app.py              FastAPI web UI — async streaming handlers
+├── webui/                  Plain HTML/CSS/JS frontend (no build step)
 ├── core/
 │   ├── ai.py               AI engine — Ollama (sync + async) and API backends
 │   ├── config.py           Pydantic-validated config with env var overrides
@@ -383,7 +384,7 @@ The AI engine (`core/ai.py`) supports **two backend modes** configured via `conf
 
 **Streaming — CLI:** `ask_ai()` prints tokens to stdout as they arrive using the synchronous Ollama streaming generator. The `capture_output=True` flag also collects and returns the full response string for use by modules that need the AI output programmatically (e.g. git helper, code audit).
 
-**Streaming — web UI:** `ask_ai_streaming()` is an async generator that uses `asyncio.get_running_loop().run_in_executor()` to bridge the synchronous Ollama SDK into the async Chainlit event loop without blocking the event loop thread.
+**Streaming — web UI:** `ask_ai_streaming()` is an async generator that uses `asyncio.get_running_loop().run_in_executor()` to bridge the synchronous Ollama SDK into FastAPI's async event loop without blocking it, streamed to the browser over Server-Sent Events.
 
 #### API backend (Groq / OpenAI-compatible)
 
@@ -539,17 +540,15 @@ The session provides:
 - `indexed_path` — tracks the currently indexed project path so RAG queries target the right codebase implicitly
 - `history_summary()` — formatted string showing turn count and session elapsed time, shown by `da> status`
 
-### Web UI (Chainlit)
+### Web UI (FastAPI)
 
-`web_chat.py` implements the Chainlit web interface (`da --web`) with full async streaming. Access is **open by default — no login or registration required**.
+`web_app.py` implements the web interface (`da --web`) with full async streaming over Server-Sent Events, served by `uvicorn` in the same process (no subprocess, no separate CLI tool). The frontend in `webui/` is plain HTML/CSS/JS with no build step, so it packages cleanly into a single onefile binary. Access is **open by default — no login or registration required**.
 
 - All AI responses stream token-by-token using async generators from `core/ai.ask_ai_streaming`.
 - RAG queries use `core/rag_engine.ask_with_context_async`, which yields tokens to the browser and saves the full response to session history on completion.
 - File uploads (documents for RAG indexing) are accepted inline in the chat.
 - Per-session chat history and model settings are maintained in-memory for the duration of the browser session.
 - Ollama start/stop and status are available via action buttons or inline commands (`ollama on`, `ollama off`, `ollama status`).
-- **Localisation:** Bengali translation included (`dev-assist/.chainlit/translations/bn.json`) alongside 15+ other locales (Arabic, Chinese Simplified/Traditional, French, German, Hindi, Japanese, Korean, Tamil, Telugu, and more).
-
 The web UI exposes the identical functionality as the terminal REPL — the same router, modules, AI engine, and session management — accessed through a browser.
 
 ### Plugins
@@ -597,7 +596,9 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 | `rich >= 13.0` | Terminal formatting — panels, tables, progress bars |
 | `prompt-toolkit >= 3.0` | REPL readline, persistent history, completions |
 | `jinja2 >= 3.1` | Prompt template rendering |
-| `chainlit >= 2.0` | Web UI framework with async streaming support |
+| `fastapi >= 0.110` | Web UI backend — async routes, SSE streaming |
+| `uvicorn >= 0.29` | ASGI server that runs the web UI in-process |
+| `python-multipart >= 0.0.9` | Multipart form parsing for file uploads |
 
 ---
 
@@ -821,7 +822,8 @@ ollama-forge/
 │
 ├── dev-assist/                 AI DevOps assistant CLI + web UI
 │   ├── main.py                 CLI entry point and REPL loop
-│   ├── web_chat.py             Chainlit web UI with auth and async streaming
+│   ├── web_app.py              FastAPI web UI with async streaming (SSE)
+│   ├── webui/                  Plain HTML/CSS/JS frontend (no build step)
 │   ├── core/                   AI engine, config, RAG orchestrator, router,
 │   │                           session context, shell helpers, vector store
 │   ├── modules/                Shell exec, git, code audit, indexer,
@@ -829,7 +831,6 @@ ollama-forge/
 │   ├── plugins/                Makefile runner, Telegram notifier
 │   ├── tests/                  pytest suite — RAG, router, shell
 │   ├── config/settings.json    Persistent AI engine and model config
-│   ├── .chainlit/              Chainlit config + 15+ locale translations
 │   ├── .env.example            Environment variable reference with examples
 │   └── requirements.txt
 │

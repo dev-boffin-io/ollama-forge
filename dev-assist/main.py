@@ -4,7 +4,7 @@ dev-assist — Personal AI DevOps Assistant with RAG
 
 Usage:
   python main.py                    →  Terminal REPL (CLI mode)
-  python main.py --web              →  Web UI mode (Chainlit)
+  python main.py --web              →  Web UI mode (FastAPI, in-process)
   python main.py --web --port 8080
   python main.py --help             →  Show this help
 
@@ -24,126 +24,48 @@ import sys
 
 
 def _start_web(host: str, port: int) -> None:
-    """Launch Chainlit web interface."""
-    import subprocess
-    import shutil
-
+    """
+    Launch the FastAPI web interface -- runs fully in-process (no subprocess,
+    no external CLI, no dependency on a Python interpreter being on PATH).
+    This is what makes onefile PyInstaller packaging simple: uvicorn/FastAPI
+    are bundled straight into the frozen binary and served directly.
+    """
     _frozen = getattr(sys, "frozen", False)
 
-    # ── Find a real Python interpreter ────────────────────────────────────────
-    # sys.executable inside a frozen binary is the binary itself, not Python.
-    def _find_python() -> str:
-        if not _frozen:
-            return sys.executable
-        for candidate in ("python3", "python"):
-            found = shutil.which(candidate)
-            if found:
-                return found
-        for p in ("/usr/bin/python3", "/usr/local/bin/python3", "/bin/python3"):
-            if os.path.isfile(p):
-                return p
-        return ""
-
-    python_exe = _find_python()
-    if not python_exe:
-        _print("⚠️  Could not find a Python interpreter on PATH.")
-        _print("   Install Python 3.9+ and make sure it is on your PATH.")
-        sys.exit(1)
-
-    # ── Verify chainlit is importable via that Python ─────────────────────────
-    check = subprocess.run(
-        [python_exe, "-c", "import chainlit"],
-        capture_output=True,
+    # -- Make sure this directory (and its bundled data) is importable ------
+    _base_dir = (
+        getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        if _frozen else os.path.dirname(os.path.abspath(__file__))
     )
-    if check.returncode != 0:
-        _print("⚠️  chainlit not found. Install it:")
-        _print(f"   {python_exe} -m pip install chainlit")
-        sys.exit(1)
-
-    # ── Locate web_chat.py ────────────────────────────────────────────────────
-    # Frozen onefile: extract web_chat.py + .chainlit config to a stable tmpdir
-    # so chainlit subprocess can find them after _MEIPASS is cleaned up.
-    _tmp_dir = None
-    if _frozen:
-        import tempfile
-        _mei = getattr(sys, "_MEIPASS", os.path.dirname(__file__))
-        _tmp_dir = tempfile.mkdtemp(prefix="dev_assist_web_")
-
-        web_file = os.path.join(_tmp_dir, "web_chat.py")
-        shutil.copy2(os.path.join(_mei, "web_chat.py"), web_file)
-
-        # Copy core/ and modules/ so web_chat.py can import them.
-        # These are bundled as raw .py datas in the spec (not just PYZ),
-        # so _MEIPASS contains the actual source files for copying.
-        for _pkg in ("core", "modules"):
-            _src = os.path.join(_mei, _pkg)
-            _dst = os.path.join(_tmp_dir, _pkg)
-            if os.path.isdir(_src) and not os.path.exists(_dst):
-                shutil.copytree(_src, _dst)
-
-        # Copy .chainlit config so chainlit doesn't complain about missing config
-        _cl_src = os.path.join(_mei, ".chainlit")
-        _cl_dst = os.path.join(_tmp_dir, ".chainlit")
-        if os.path.isdir(_cl_src):
-            shutil.copytree(_cl_src, _cl_dst)
-    else:
-        web_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_chat.py")
-
-    # ── Build subprocess env ──────────────────────────────────────────────────
-    # Forward DEV_ASSIST_CONFIG_DIR so web_chat.py resolves settings correctly
-    sub_env = os.environ.copy()
-    config_dir = os.environ.get("DEV_ASSIST_CONFIG_DIR")
-    if config_dir:
-        sub_env["DEV_ASSIST_CONFIG_DIR"] = config_dir
-    if _frozen and _tmp_dir:
-        # chainlit looks for .chainlit/ relative to cwd — run from tmpdir
-        sub_env["CHAINLIT_APP_ROOT"] = _tmp_dir
-
-    cmd = [
-        python_exe, "-m", "chainlit", "run", web_file,
-        "--host", host,
-        "--port", str(port),
-        "--headless",
-    ]
-
-    _print("⚡ [bold]dev-assist[/bold] — Web UI starting...")
+    if _base_dir not in sys.path:
+        sys.path.insert(0, _base_dir)
 
     try:
-        proc = subprocess.Popen(
-            cmd, env=sub_env,
-            cwd=_tmp_dir if _frozen and _tmp_dir else None,
-        )
+        import uvicorn
+    except ImportError:
+        _print("[!] uvicorn not found. Install it:")
+        _print("   pip install fastapi uvicorn python-multipart")
+        sys.exit(1)
 
-        # Wait until chainlit is actually accepting connections
-        import socket, time
-        _deadline = time.time() + 30
-        _ready = False
-        while time.time() < _deadline:
-            try:
-                with socket.create_connection((host if host != "0.0.0.0" else "127.0.0.1", port), timeout=1):
-                    _ready = True
-                    break
-            except OSError:
-                time.sleep(0.3)
+    try:
+        from web_app import app as _fastapi_app
+    except Exception as exc:
+        _print(f"[!] Could not load web app: {exc}")
+        sys.exit(1)
 
-        if _ready:
-            _print(f"""
-  URL  : [link]http://{host}:{port}[/link]
-  File : {web_file}
+    _print("[bold]dev-assist[/bold] -- Web UI starting...")
+    _display_host = host if host != "0.0.0.0" else "127.0.0.1"
+    _print(f"""
+  URL  : [link]http://{_display_host}:{port}[/link]
 
-  [green]✓ Server is ready![/green] Open the URL above in your browser.
+  [green]Starting server...[/green] Open the URL above in your browser once ready.
   Press [bold]Ctrl+C[/bold] to stop.
 """)
-        else:
-            _print(f"[yellow]⚠ Server did not respond within 30s. Try http://{host}:{port} manually.[/yellow]")
 
-        proc.wait()
+    try:
+        uvicorn.run(_fastapi_app, host=host, port=port, log_level="warning")
     except KeyboardInterrupt:
-        _print("\n🛑 Web UI stopped.")
-    finally:
-        if _tmp_dir:
-            shutil.rmtree(_tmp_dir, ignore_errors=True)
-
+        _print("\n Web UI stopped.")
 
 def _start_cli() -> None:
     """Launch terminal REPL mode with history + completion."""

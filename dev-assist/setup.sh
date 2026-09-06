@@ -142,7 +142,9 @@ PKGS=(
     "rich>=13.0"
     "prompt-toolkit>=3.0"
     "jinja2>=3.1"
-    "chainlit>=1.0"
+    "fastapi>=0.110"
+    "uvicorn>=0.29"
+    "python-multipart>=0.0.9"
 )
 
 for pkg in "${PKGS[@]}"; do
