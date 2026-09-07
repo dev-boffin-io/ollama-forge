@@ -7,7 +7,7 @@ __pycache__/
 *.so
 Ollama-ai-gui
 Ollama-ai-manager
-ollama-main
+# ollama-main
 da
 bin/
 
