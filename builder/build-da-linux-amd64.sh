@@ -84,6 +84,7 @@ else
         fastapi \
         uvicorn \
         "python-multipart" \
+        Pillow \
         crewai \
         requests \
         packaging \
@@ -121,6 +122,8 @@ DA_HIDDEN=(
     --hidden-import uvicorn.lifespan.on
     --hidden-import multipart
     --hidden-import starlette
+    --hidden-import PIL
+    --hidden-import PIL.Image
     --hidden-import crewai
     --hidden-import crewai.agent
     --hidden-import crewai.task

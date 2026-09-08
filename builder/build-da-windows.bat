@@ -57,7 +57,7 @@ echo [→] Installing dependencies...
 if exist "%DA_DIR%\requirements.txt" (
     pip install --quiet -r "%DA_DIR%\requirements.txt"
 ) else (
-    pip install --quiet fastapi uvicorn python-multipart crewai requests packaging openai anthropic rich typer click httpx
+    pip install --quiet fastapi uvicorn python-multipart Pillow crewai requests packaging openai anthropic rich typer click httpx
 )
 
 REM ── PyInstaller ─────────────────────────────────────────────────────────
@@ -89,6 +89,8 @@ set DA_HIDDEN=^
     --hidden-import uvicorn.lifespan.on ^
     --hidden-import multipart ^
     --hidden-import starlette ^
+    --hidden-import PIL ^
+    --hidden-import PIL.Image ^
     --hidden-import crewai ^
     --hidden-import crewai.agent ^
     --hidden-import crewai.task ^

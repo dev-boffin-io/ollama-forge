@@ -22,5 +22,8 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 
+# ── Image attachments (resize/compress before sending to vision models) ─────
+Pillow>=10.0
+
 # ── Dev / Linting ────────────────────────────────────────────────────────────
 # ruff  black  isort  pyright  pre-commit  pytest  pytest-asyncio

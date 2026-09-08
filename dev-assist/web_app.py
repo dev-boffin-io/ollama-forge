@@ -169,7 +169,7 @@ async def _ollama_stop() -> str:
 # AI streaming — yields plain text tokens
 # ---------------------------------------------------------------------------
 
-async def _stream_response(sid: str, user_text: str, file_context: str = ""):
+async def _stream_response(sid: str, user_text: str, file_context: str = "", images: list[str] | None = None):
     from core.ai import _load_config as _ai_cfg, _get_engine, _get_ollama_model
 
     cfg = _ai_cfg()
@@ -182,7 +182,11 @@ async def _stream_response(sid: str, user_text: str, file_context: str = ""):
     history = _get_history(sid, limit=MAX_CONTEXT_MESSAGES)
     msgs = [{"role": m["role"], "content": m["content"]} for m in history]
     full_q = f"{user_text}\n\n--- Attached file ---\n{file_context}" if file_context else user_text
-    msgs.append({"role": "user", "content": full_q})
+    last_msg = {"role": "user", "content": full_q}
+    if images:
+        # Ollama's vision API takes base64 strings directly under "images".
+        last_msg["images"] = images
+    msgs.append(last_msg)
 
     if engine == "ollama":
         if _ollama_status() != "running":
@@ -207,7 +211,13 @@ async def _stream_response(sid: str, user_text: str, file_context: str = ""):
                         if token:
                             token_queue.put(token)
                 except Exception as exc:
-                    token_queue.put(f"\n\n⚠️ Ollama error: {exc}")
+                    if images:
+                        token_queue.put(
+                            f"\n\n⚠️ Ollama error: {exc}\n"
+                            f"(Note: the selected model may not support image/vision input.)"
+                        )
+                    else:
+                        token_queue.put(f"\n\n⚠️ Ollama error: {exc}")
                 finally:
                     token_queue.put(None)
 
@@ -230,7 +240,22 @@ async def _stream_response(sid: str, user_text: str, file_context: str = ""):
             api_key = _get_api_key(cfg)
             api_url = settings.get("api_url") or _get_api_url(cfg)
             model = settings.get("api_model") or _get_api_model(cfg)
-            payload = _j.dumps({"model": model, "messages": msgs, "stream": False}).encode()
+
+            api_msgs = msgs[:-1]
+            if images:
+                # OpenAI-compatible vision format: content becomes a list of
+                # text + image_url parts instead of a plain string.
+                content_parts = [{"type": "text", "text": full_q}]
+                for b64 in images:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    })
+                api_msgs.append({"role": "user", "content": content_parts})
+            else:
+                api_msgs.append({"role": "user", "content": full_q})
+
+            payload = _j.dumps({"model": model, "messages": api_msgs, "stream": False}).encode()
             req = urllib.request.Request(
                 api_url, data=payload,
                 headers={"Content-Type": "application/json",
@@ -404,22 +429,31 @@ async def api_chat(
 
     # ── File upload ──────────────────────────────────────────────────
     file_context = ""
+    images: list[str] = []
     if file is not None:
         try:
             content_bytes = await file.read()
-            content = content_bytes.decode("utf-8", errors="replace")
-            file_context = f"[File: {file.filename}]\n{content[:8000].replace(chr(0), '')}"
+            from core.attachment_handler import process_attachment_bytes
+            result = process_attachment_bytes(file.filename, content_bytes)
+            if result.has_images():
+                images = result.images
+                file_context = ""  # image goes via `images`, not text injection
+            elif result.has_text():
+                fname, content = result.text_blocks[0]
+                file_context = f"[File: {fname}]\n{content[:8000]}"
+            else:
+                file_context = result.summary
         except Exception as e:
             file_context = f"[Could not read {file.filename}: {e}]"
 
     saved = raw
-    if file_context and file is not None:
+    if file is not None:
         saved += f"\n[attached: {file.filename}]"
     _save_msg(sid, "user", saved)
 
     async def _gen():
         full_reply = []
-        async for token in _stream_response(sid, raw, file_context):
+        async for token in _stream_response(sid, raw, file_context, images):
             full_reply.append(token)
             yield f"data: {json.dumps({'token': token})}\n\n"
         _save_msg(sid, "assistant", "".join(full_reply))
