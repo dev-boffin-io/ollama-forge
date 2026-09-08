@@ -7,11 +7,20 @@ import base64
 import os
 import zipfile
 
+from PyQt6.QtCore import QBuffer, QIODevice, Qt
+from PyQt6.QtGui import QImage
+
 IMAGE_EXTS = frozenset({
     '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.tiff', '.ico'
 })
 MAX_TEXT_BYTES = 150_000   # 150 KB per text file
 MAX_ZIP_FILES  = 30        # cap files extracted from zip
+
+# Long-side cap (px) before sending an image to a vision model. Most vision
+# models (LLaVA, Groq vision, etc.) don't benefit from anything larger, and
+# oversized photos slow down base64 encoding, network transfer, and inference.
+MAX_IMAGE_DIMENSION = 1568
+JPEG_QUALITY = 85
 
 _LANG_MAP = {
     'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
@@ -90,6 +99,55 @@ def _to_b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
+def _optimize_image(data: bytes) -> bytes:
+    """
+    Downscale oversized images and re-encode to a smaller format before
+    base64-encoding. Uses Qt's built-in QImage — already a dependency via
+    PyQt6, so this needs no extra library (no OpenCV/Pillow install, no
+    binary-size hit on the PyInstaller build).
+
+    Falls back to the original bytes whenever decoding fails or the
+    "optimized" result isn't actually smaller, so a bad/unsupported image
+    never blocks the attachment.
+    """
+    try:
+        img = QImage()
+        if not img.loadFromData(data):
+            return data  # not a format Qt can decode — send as-is
+
+        w, h = img.width(), img.height()
+        longest = max(w, h)
+        needs_resize = longest > MAX_IMAGE_DIMENSION
+
+        if needs_resize:
+            scale = MAX_IMAGE_DIMENSION / longest
+            new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
+            img = img.scaled(
+                new_w, new_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        # Keep transparency where it exists (PNG); otherwise JPEG is far
+        # smaller for photos and vision models don't need the alpha channel.
+        has_alpha = img.hasAlphaChannel()
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        if has_alpha:
+            img.save(buf, "PNG")
+        else:
+            img.save(buf, "JPEG", JPEG_QUALITY)
+        out = bytes(buf.data())
+
+        if not out:
+            return data
+        if needs_resize or len(out) < len(data):
+            return out
+        return data
+    except Exception:
+        return data
+
+
 # ─────────────────────────────────────────────────────────────────────
 def process_attachment(path: str) -> AttachmentResult:
     """
@@ -103,8 +161,13 @@ def process_attachment(path: str) -> AttachmentResult:
 
     if ext in IMAGE_EXTS:
         with open(path, 'rb') as f:
-            result.images.append(_to_b64(f.read()))
-        result.summary = f"🖼️ {fname}"
+            raw = f.read()
+        optimized = _optimize_image(raw)
+        result.images.append(_to_b64(optimized))
+        if len(optimized) < len(raw):
+            result.summary = f"🖼️ {fname} ({len(raw)//1024}KB → {len(optimized)//1024}KB)"
+        else:
+            result.summary = f"🖼️ {fname}"
     else:
         try:
             content = _decode(_read_bytes(path))
@@ -140,7 +203,7 @@ def process_zip_selected(zip_path: str, selected: list[str]) -> AttachmentResult
                 try:
                     data = zf.read(name)
                     if ext in IMAGE_EXTS:
-                        result.images.append(_to_b64(data))
+                        result.images.append(_to_b64(_optimize_image(data)))
                     else:
                         result.text_blocks.append(
                             (name, _decode(data[:MAX_TEXT_BYTES]))
