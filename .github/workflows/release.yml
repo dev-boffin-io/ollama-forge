@@ -1,0 +1,83 @@
+name: Release
+
+# Single entry point for tagged releases — builds every OS/arch by calling
+# the three platform workflows as reusable jobs, then bundles everything
+# into one GitHub Release. Push a tag like "v1.2.0" to trigger this.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (for manual re-runs)"
+        required: false
+        type: string
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  build-linux-amd64:
+    uses: ./.github/workflows/build-linux-amd64.yml
+
+  build-linux-arm64:
+    uses: ./.github/workflows/build-linux-arm64.yml
+
+  build-windows:
+    uses: ./.github/workflows/build-windows.yml
+
+  release:
+    name: Package and publish release
+    needs: [build-linux-amd64, build-linux-arm64, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          # no `name:` → pulls every artifact from this run into artifacts/<artifact-name>/
+
+      - name: Show what was downloaded
+        run: find artifacts -type f | sort
+
+      # Bundle each platform's GUI + dev-assist binaries into one zip so
+      # people downloading the release get a single file per platform
+      # instead of six separate raw binaries.
+      - name: Package per-platform zips
+        run: |
+          set -e
+          mkdir -p dist
+
+          package() {
+            local platform="$1"; shift
+            local out="dist/ollama-forge-${platform}.zip"
+            local staging
+            staging="$(mktemp -d)"
+            for src in "$@"; do
+              [ -d "$src" ] && cp -r "$src"/. "$staging"/
+            done
+            ( cd "$staging" && zip -r "$OLDPWD/$out" . )
+            echo "Built $out:"
+            unzip -l "$out"
+          }
+
+          package linux-amd64 \
+            artifacts/ollama-forge-gui-linux-amd64 \
+            artifacts/ollama-forge-dev-assist-linux-amd64
+
+          package linux-arm64 \
+            artifacts/ollama-forge-gui-linux-arm64 \
+            artifacts/ollama-forge-dev-assist-linux-arm64
+
+          package windows-x64 \
+            artifacts/ollama-forge-gui-windows-x64 \
+            artifacts/ollama-forge-dev-assist-windows-x64
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: dist/*.zip

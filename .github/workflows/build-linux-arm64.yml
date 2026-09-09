@@ -1,0 +1,61 @@
+name: Build — Linux (ARM64)
+
+on:
+  workflow_dispatch: {}   # manual run for testing this platform alone
+  workflow_call: {}       # invoked by release.yml on a version tag push
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build GUI + dev-assist (linux-arm64)
+    # Free GitHub-hosted arm64 runner (public repos only). If this repo is
+    # private, switch to a self-hosted arm64 runner label instead.
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same Qt6/xcb runtime libs as the amd64 job — PyInstaller dlopen()s
+      # them while packaging PyQt6, even headless.
+      - name: Install Qt6 runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 \
+            libxkbcommon-x11-0 libgl1 libegl1 libdbus-1-3
+
+      - name: Verify architecture
+        run: |
+          echo "uname -m: $(uname -m)"
+          [ "$(uname -m)" = "aarch64" ] || { echo "Expected aarch64 runner"; exit 1; }
+
+      - name: Build Ollama GUI (Ollama-ai-gui-arm64 + Ollama-ai-manager-arm64)
+        run: bash builder/build-gui-linux-arm64.sh
+
+      - name: Build dev-assist (da-arm64 + ollama-main-arm64)
+        run: bash builder/build-da-linux-arm64.sh
+
+      - name: List built binaries
+        run: |
+          echo "── bin/Ollama-GUI/ ──"
+          ls -lh bin/Ollama-GUI/ || true
+          echo "── bin/dev-assist/ ──"
+          ls -lh bin/dev-assist/ || true
+
+      - name: Upload Ollama GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-forge-gui-linux-arm64
+          path: bin/Ollama-GUI/
+          if-no-files-found: error
+
+      - name: Upload dev-assist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-forge-dev-assist-linux-arm64
+          path: bin/dev-assist/
+          if-no-files-found: error
