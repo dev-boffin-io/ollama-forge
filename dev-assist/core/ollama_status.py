@@ -13,8 +13,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
+
+IS_WINDOWS = sys.platform.startswith("win")
 
 # Singleton background process handle
 _ollama_proc: subprocess.Popen | None = None
@@ -26,7 +29,17 @@ def _is_ollama_installed() -> bool:
 
 
 def _check_running_via_ps() -> bool:
-    """Check if any 'ollama serve' process is alive using ps."""
+    """Check if any 'ollama serve' process is alive."""
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq ollama.exe"],
+                capture_output=True, text=True, timeout=3
+            )
+            return "ollama.exe" in result.stdout.lower()
+        except Exception:
+            return False
+
     try:
         result = subprocess.run(
             ["pgrep", "-f", "ollama serve"],
@@ -143,12 +156,17 @@ def start_ollama() -> str:
 
     with _lock:
         try:
-            _ollama_proc = subprocess.Popen(
-                ["ollama", "serve"],
+            popen_kwargs = dict(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,   # detach from terminal (POSIX)
             )
+            if IS_WINDOWS:
+                # Detach from the console window instead of setsid (POSIX-only)
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            else:
+                popen_kwargs["start_new_session"] = True  # detach from terminal (POSIX)
+
+            _ollama_proc = subprocess.Popen(["ollama", "serve"], **popen_kwargs)
         except Exception as exc:
             return f"❌ Failed to start ollama: {exc}"
 
@@ -189,17 +207,29 @@ def stop_ollama() -> str:
 
     # Second: kill any other ollama serve processes
     try:
-        result = subprocess.run(
-            ["pkill", "-f", "ollama serve"],
-            capture_output=True, text=True, timeout=5
-        )
+        if IS_WINDOWS:
+            result = subprocess.run(
+                ["taskkill", "/IM", "ollama.exe", "/F"],
+                capture_output=True, text=True, timeout=5
+            )
+            # Also stop the tray app, if present, mirroring the official uninstall guide
+            subprocess.run(
+                ["taskkill", "/IM", "ollama app.exe", "/F"],
+                capture_output=True, text=True, timeout=5
+            )
+        else:
+            result = subprocess.run(
+                ["pkill", "-f", "ollama serve"],
+                capture_output=True, text=True, timeout=5
+            )
         if result.returncode == 0:
             killed = True
     except Exception:
         pass
 
-    # Fallback: kill by port 11434
-    if not killed:
+    # Fallback: kill by port 11434 (POSIX only — Windows has no fuser equivalent
+    # here, but taskkill above already covers the common case)
+    if not killed and not IS_WINDOWS:
         try:
             result = subprocess.run(
                 ["fuser", "-k", "11434/tcp"],
@@ -215,5 +245,7 @@ def stop_ollama() -> str:
     final = get_status()
     if final == "stopped":
         return "✅ ollama stopped. (🔴 stopped)"
+    elif IS_WINDOWS:
+        return "⚠️  Could not stop ollama. Try Task Manager, or: taskkill /IM ollama.exe /F"
     else:
         return "⚠️  Could not stop ollama. Try: pkill -f 'ollama serve'"

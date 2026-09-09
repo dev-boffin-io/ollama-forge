@@ -4,6 +4,9 @@ import argparse
 import os
 import re
 import subprocess
+import sys
+import tempfile
+import urllib.request
 import requests
 from packaging import version
 
@@ -16,7 +19,9 @@ GITHUB_API   = "https://api.github.com/repos/ollama/ollama/releases/latest"
 FALLBACK_API = "https://api.github.com/repos/ollama/ollama/releases"
 INSTALL_CMD  = "curl -fsSL https://ollama.com/install.sh | sh"
 
-# All paths created by ollama's official install.sh
+IS_WINDOWS = sys.platform.startswith("win")
+
+# All paths created by ollama's official install.sh (Linux/macOS)
 OLLAMA_PATHS = [
     "/usr/local/bin/ollama",
     "/usr/local/lib/ollama",
@@ -24,6 +29,15 @@ OLLAMA_PATHS = [
     "/etc/systemd/system/ollama.service",
     "/etc/systemd/system/ollama.service.d",
 ]
+
+# Windows installs per-user via OllamaSetup.exe — no admin/UAC required.
+# (docs.ollama.com/windows: "installs in your account without requiring
+# Administrator rights"; installer registers unins000.exe under Add/Remove
+# Programs, per the official Inno Setup convention.)
+WIN_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+WIN_INSTALL_DIR   = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+WIN_UNINSTALLER   = os.path.join(WIN_INSTALL_DIR, "unins000.exe")
+WIN_PROCESS_NAMES = ["ollama.exe", "ollama app.exe"]
 
 
 # --------------------------------------------------
@@ -47,7 +61,10 @@ def run(cmd):
 
 
 def sudo_prefix():
-    """Return ['sudo'] if not already root, else []."""
+    """Return ['sudo'] if not already root, else []. No-op on Windows —
+    the official installer runs per-user and never needs elevation."""
+    if IS_WINDOWS:
+        return []
     return [] if os.geteuid() == 0 else ["sudo"]
 
 
@@ -97,6 +114,62 @@ def get_latest_version():
 
 
 # --------------------------------------------------
+# Windows installer helpers
+# --------------------------------------------------
+
+def _windows_run_installer():
+    """
+    Download the official OllamaSetup.exe and run it silently.
+    Handles both fresh installs and upgrades — running the installer
+    again over an existing install updates it in place (this mirrors
+    what `irm https://ollama.com/install.ps1 | iex` does under the hood).
+    """
+    installer_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+    print(f"{Color.BLUE}Downloading {WIN_INSTALLER_URL}...{Color.RESET}")
+    try:
+        urllib.request.urlretrieve(WIN_INSTALLER_URL, installer_path)
+    except Exception as e:
+        print(f"{Color.RED}Download failed: {e}{Color.RESET}")
+        return False
+
+    print(f"{Color.BLUE}Running installer (silent)...{Color.RESET}")
+    try:
+        result = subprocess.run([installer_path, "/SILENT"])
+        if result.returncode != 0:
+            print(f"{Color.RED}Installer exited with code {result.returncode}{Color.RESET}")
+            return False
+        return True
+    except Exception as e:
+        print(f"{Color.RED}Failed to run installer: {e}{Color.RESET}")
+        return False
+
+
+def _windows_uninstall():
+    for proc_name in WIN_PROCESS_NAMES:
+        try:
+            subprocess.run(["taskkill", "/IM", proc_name, "/F"], capture_output=True)
+        except Exception:
+            pass
+
+    if not os.path.isfile(WIN_UNINSTALLER):
+        print(f"{Color.YELLOW}Uninstaller not found at {WIN_UNINSTALLER}.{Color.RESET}")
+        print(f"{Color.YELLOW}Remove Ollama via Windows Settings → Apps instead.{Color.RESET}")
+        return
+
+    print(f"{Color.BLUE}Running uninstaller...{Color.RESET}")
+    try:
+        result = subprocess.run(
+            [WIN_UNINSTALLER, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+        )
+        if result.returncode == 0:
+            print(f"{Color.GREEN}Ollama removed{Color.RESET}")
+        else:
+            print(f"{Color.RED}Uninstaller exited with code {result.returncode}{Color.RESET}")
+    except Exception as e:
+        print(f"{Color.RED}Failed to run uninstaller: {e}{Color.RESET}")
+
+
+# --------------------------------------------------
 # Install
 # --------------------------------------------------
 
@@ -106,7 +179,10 @@ def install():
         return
 
     print(f"{Color.BLUE}Installing Ollama...{Color.RESET}")
-    subprocess.run(["sh", "-c", INSTALL_CMD])
+    if IS_WINDOWS:
+        _windows_run_installer()
+    else:
+        subprocess.run(["sh", "-c", INSTALL_CMD])
 
 
 # --------------------------------------------------
@@ -131,7 +207,10 @@ def upgrade():
         return
 
     print(f"{Color.BLUE}Upgrading Ollama {current} → {latest}{Color.RESET}")
-    subprocess.run(["sh", "-c", INSTALL_CMD])
+    if IS_WINDOWS:
+        _windows_run_installer()
+    else:
+        subprocess.run(["sh", "-c", INSTALL_CMD])
 
 
 # --------------------------------------------------
@@ -171,6 +250,10 @@ def uninstall():
         return
 
     print(f"{Color.YELLOW}Removing Ollama...{Color.RESET}")
+
+    if IS_WINDOWS:
+        _windows_uninstall()
+        return
 
     prefix = sudo_prefix()
 

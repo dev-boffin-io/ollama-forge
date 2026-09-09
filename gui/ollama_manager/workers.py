@@ -8,12 +8,24 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .helpers import OLLAMA_PATHS
+
+IS_WINDOWS = sys.platform.startswith("win")
+
+# Windows installs Ollama per-user via OllamaSetup.exe — no admin/UAC needed.
+# See docs.ollama.com/windows: "installs in your account without requiring
+# Administrator rights". The installer registers unins000.exe (Inno Setup
+# convention) under Add/Remove Programs.
+WIN_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+WIN_INSTALL_DIR   = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+WIN_UNINSTALLER   = os.path.join(WIN_INSTALL_DIR, "unins000.exe")
+WIN_PROCESS_NAMES = ["ollama.exe", "ollama app.exe"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,12 +118,14 @@ class ManageWorker(QThread):
         self.line.emit(msg)
 
     def _sudo(self) -> list[str]:
+        if IS_WINDOWS:
+            return []  # per-user install, never needs elevation
         return [] if os.geteuid() == 0 else ["sudo", "-A"]
 
     def _make_sudo_env(self) -> tuple[dict, str | None]:
         """Build env with SUDO_ASKPASS pointing to a temp script."""
         env = os.environ.copy()
-        if os.geteuid() == 0 or not self._sudo_password:
+        if IS_WINDOWS or os.geteuid() == 0 or not self._sudo_password:
             return env, None
         import shlex as _shlex
         fd, tmp = tempfile.mkstemp(suffix=".sh", prefix=".ollama_askpass_")
@@ -135,7 +149,7 @@ class ManageWorker(QThread):
     def _stream_shell(self, cmd: str) -> None:
         env, askpass_tmp = self._make_sudo_env()
         try:
-            if os.geteuid() != 0 and self._sudo_password:
+            if not IS_WINDOWS and os.geteuid() != 0 and self._sudo_password:
                 proc = subprocess.Popen(
                     ["sudo", "-kS", "sh", "-c", cmd],
                     stdout=subprocess.PIPE,
@@ -168,6 +182,51 @@ class ManageWorker(QThread):
                     os.remove(askpass_tmp)
                 except Exception:
                     pass
+
+    def _windows_run_installer(self) -> bool:
+        import urllib.request
+        installer_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+        self._emit(f"Downloading {WIN_INSTALLER_URL}...")
+        try:
+            urllib.request.urlretrieve(WIN_INSTALLER_URL, installer_path)
+        except Exception as e:
+            self._emit(f"Download failed: {e}")
+            return False
+
+        self._emit("Running installer (silent)...")
+        try:
+            result = subprocess.run([installer_path, "/SILENT"])
+            if result.returncode != 0:
+                self._emit(f"Installer exited with code {result.returncode}")
+                return False
+            return True
+        except Exception as e:
+            self._emit(f"Failed to run installer: {e}")
+            return False
+
+    def _windows_uninstall(self) -> None:
+        for proc_name in WIN_PROCESS_NAMES:
+            try:
+                subprocess.run(["taskkill", "/IM", proc_name, "/F"], capture_output=True)
+            except Exception:
+                pass
+
+        if not os.path.isfile(WIN_UNINSTALLER):
+            self._emit(f"Uninstaller not found at {WIN_UNINSTALLER}.")
+            self._emit("Remove Ollama via Windows Settings → Apps instead.")
+            return
+
+        self._emit("Running uninstaller...")
+        try:
+            result = subprocess.run(
+                [WIN_UNINSTALLER, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+            )
+            if result.returncode == 0:
+                self._emit("Ollama removed.")
+            else:
+                self._emit(f"Uninstaller exited with code {result.returncode}")
+        except Exception as e:
+            self._emit(f"Failed to run uninstaller: {e}")
 
     def _current_ver(self) -> str | None:
         try:
@@ -216,15 +275,22 @@ class ManageWorker(QThread):
         if self._current_ver():
             self._emit("Ollama already installed.")
             return
-        self._emit("Installing via official install.sh...")
-        self._stream_shell(self._INSTALL_CMD)
+        if IS_WINDOWS:
+            self._emit("Installing via official OllamaSetup.exe...")
+            self._windows_run_installer()
+        else:
+            self._emit("Installing via official install.sh...")
+            self._stream_shell(self._INSTALL_CMD)
 
     def _cmd_upgrade(self) -> None:
         cur = self._current_ver()
         lat = self._latest_ver()
         if not cur:
             self._emit("Not installed, installing...")
-            self._stream_shell(self._INSTALL_CMD)
+            if IS_WINDOWS:
+                self._windows_run_installer()
+            else:
+                self._stream_shell(self._INSTALL_CMD)
             return
         if not lat:
             self._emit("Cannot reach GitHub. Aborted.")
@@ -234,12 +300,18 @@ class ManageWorker(QThread):
             self._emit(f"Already latest ({cur}).")
             return
         self._emit(f"Upgrading {cur} to {lat}...")
-        self._stream_shell(self._INSTALL_CMD)
+        if IS_WINDOWS:
+            self._windows_run_installer()
+        else:
+            self._stream_shell(self._INSTALL_CMD)
 
     def _cmd_uninstall(self) -> None:
         cur = self._current_ver()
         if not cur:
             self._emit("Ollama is not installed.")
+            return
+        if IS_WINDOWS:
+            self._windows_uninstall()
             return
         env, askpass_tmp = self._make_sudo_env()
         prefix = self._sudo()

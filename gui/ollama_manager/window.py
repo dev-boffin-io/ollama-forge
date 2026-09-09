@@ -445,7 +445,7 @@ class OllamaManager(QMainWindow):
         self._active_manage_worker.start()
 
     def _ask_sudo_password(self) -> str | None:
-        if os.geteuid() == 0:
+        if sys.platform.startswith("win") or os.geteuid() == 0:
             return ""
         from PyQt6.QtWidgets import QInputDialog
         pwd, ok = QInputDialog.getText(
@@ -706,9 +706,14 @@ class OllamaManager(QMainWindow):
                     self._serve_proc.kill()
                 self._serve_proc = None
             else:
-                subprocess.run(
-                    ["pkill", "-TERM", "-x", "ollama"], capture_output=True
-                )
+                if sys.platform.startswith("win"):
+                    subprocess.run(
+                        ["taskkill", "/IM", "ollama.exe", "/F"], capture_output=True
+                    )
+                else:
+                    subprocess.run(
+                        ["pkill", "-TERM", "-x", "ollama"], capture_output=True
+                    )
                 for _ in range(12):
                     time.sleep(0.4)
                     try:

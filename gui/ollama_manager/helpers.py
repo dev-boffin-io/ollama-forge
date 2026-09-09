@@ -53,15 +53,22 @@ def save_ollama_bin(path: str) -> None:
 
 def autodetect_ollama() -> str:
     import shutil
+    import sys
     found = shutil.which("ollama")
     if found:
         return found
-    for p in (
-        "/usr/local/bin/ollama",
-        "/usr/bin/ollama",
-        os.path.expanduser("~/bin/ollama"),
-        "/data/data/com.termux/files/usr/bin/ollama",
-    ):
+    if sys.platform.startswith("win"):
+        candidates = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"),
+        ]
+    else:
+        candidates = [
+            "/usr/local/bin/ollama",
+            "/usr/bin/ollama",
+            os.path.expanduser("~/bin/ollama"),
+            "/data/data/com.termux/files/usr/bin/ollama",
+        ]
+    for p in candidates:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
     return ""

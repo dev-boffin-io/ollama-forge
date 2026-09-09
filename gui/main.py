@@ -1733,11 +1733,17 @@ class OllamaGUI(QMainWindow):
                         self._server_proc.kill()
                     self._server_proc = None
                 else:
-                    # Started externally — use pkill
-                    subprocess.run(
-                        ["pkill", "-TERM", "-x", "ollama"],
-                        capture_output=True
-                    )
+                    # Started externally — stop it via OS process tools
+                    if sys.platform.startswith("win"):
+                        subprocess.run(
+                            ["taskkill", "/IM", "ollama.exe", "/F"],
+                            capture_output=True
+                        )
+                    else:
+                        subprocess.run(
+                            ["pkill", "-TERM", "-x", "ollama"],
+                            capture_output=True
+                        )
                     # Wait up to 6s for it to die
                     import time as _t
                     for _ in range(12):
