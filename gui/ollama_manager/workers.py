@@ -23,7 +23,9 @@ IS_WINDOWS = sys.platform.startswith("win")
 # Administrator rights". The installer registers unins000.exe (Inno Setup
 # convention) under Add/Remove Programs.
 WIN_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
-WIN_INSTALL_DIR   = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+_LOCALAPPDATA     = os.environ.get("LOCALAPPDATA") or os.path.join(
+    os.path.expanduser("~"), "AppData", "Local")
+WIN_INSTALL_DIR   = os.path.join(_LOCALAPPDATA, "Programs", "Ollama")
 WIN_UNINSTALLER   = os.path.join(WIN_INSTALL_DIR, "unins000.exe")
 WIN_PROCESS_NAMES = ["ollama.exe", "ollama app.exe"]
 
