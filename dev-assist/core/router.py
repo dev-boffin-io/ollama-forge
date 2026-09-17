@@ -20,6 +20,9 @@ INTENTS = [
     (r"^ollama\s+off\b|^ollama\s+stop\b",   None,  "ollama_off"),
     (r"^ollama\s+status\b",                  None,  "ollama_status"),
 
+    # ── Agent mode (must precede RAG fallthrough: "do/agent ..." wins) ────
+    (r"^\s*(do|agent)\b",                 "modules.agent_mode",    "run"),
+
     # ── RAG / Indexing ────────────────────────────────────────────────────
     (r"\b(index|idx)\b",                  "modules.indexer",       "run"),
     (r"\bindex\s+status\b",               "modules.indexer",       "run"),
@@ -315,6 +318,14 @@ def _show_help() -> None:
         from rich.text import Text
         console = Console()
         help_text = """\
+[bold cyan]Agent Mode (edits your code):[/bold cyan]
+  do <task>                →  agent reads/edits files & runs commands
+  agent <task>             →  same as 'do'
+  do <task> --yes          →  skip approval prompts
+  do <task> --verbose      →  show full tool output
+  [dim]e.g. do fix the failing test in tests/[/dim]
+  [dim]Needs a tool-capable model (qwen2.5-coder:7b, llama3.1:8b, or API mode)[/dim]
+
 [bold cyan]RAG / Code Analysis:[/bold cyan]
   index /path/to/project   →  index a local folder
   index status             →  show indexed files
