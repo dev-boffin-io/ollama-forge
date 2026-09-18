@@ -39,10 +39,13 @@ _TOOL_ICONS = {
 
 
 def _make_renderer(verbose: bool):
+    from core import tui_status
+
     def on_event(kind: str, text: str) -> None:
         if kind == "tool":
             name = text.split(":", 1)[0]
             icon = _TOOL_ICONS.get(name, "•")
+            tui_status.set_activity(text[:60])
             _print(f"  {icon} [cyan]{text}[/cyan]")
         elif kind == "result":
             if not verbose:
@@ -244,6 +247,7 @@ def run(text: str) -> None:
 
     from core.agent import run_agent
     from core.change_tracker import get_tracker
+    from core import tui_status
 
     approver = make_approver(workdir, auto_yes=auto_yes)
 
@@ -256,6 +260,8 @@ def run(text: str) -> None:
         )
     except KeyboardInterrupt:
         _print("\n[yellow]Interrupted.[/yellow]")
+    finally:
+        tui_status.clear_activity()
 
     tracker = get_tracker()
     if tracker and tracker.has_changes():
