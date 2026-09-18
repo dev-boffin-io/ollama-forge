@@ -181,6 +181,7 @@ cd "$DA_DIR"
     --onefile \
     --name da-arm64 \
     --clean \
+    --runtime-hook "$DA_DIR/build_hooks/runtime_hook_paths.py" \
     "${DA_HIDDEN[@]}" \
     "${DA_EXCLUDED[@]}" \
     "${DA_DATA[@]}" \

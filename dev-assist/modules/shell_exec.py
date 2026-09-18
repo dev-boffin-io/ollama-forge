@@ -20,8 +20,9 @@ import os
 import subprocess
 import sys
 
-# Per-process tracked cwd (updated by 'cd' commands)
-_session_cwd: str = os.path.expanduser("~")
+# Per-process tracked cwd (updated by 'cd' commands) — start from the real
+# launch directory so run_git / TUI status / agent mode agree with the shell.
+_session_cwd: str = os.getcwd()
 _prev_cwd: str = ""  # for 'cd -' support
 
 

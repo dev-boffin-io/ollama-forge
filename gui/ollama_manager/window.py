@@ -507,8 +507,9 @@ class OllamaManager(QMainWindow):
     def _manage_cancel(self) -> None:
         w = getattr(self, "_active_manage_worker", None)
         if w and w.isRunning():
-            w.terminate()
-            w.wait(1000)
+            w.stop()          # cooperative: terminates the shell at the next line
+            if not w.wait(5000):
+                w.terminate() # last resort — don't leave a thread dangling
         self._manage_set_busy(False)
         self._manage_log_append("⚠️ Cancelled.")
 
@@ -657,8 +658,12 @@ class OllamaManager(QMainWindow):
     # ── Startup checks ────────────────────────────────────────────────────────
 
     def _chk_server(self) -> None:
+        existing = getattr(self, "_chk_w", None)
+        if existing is not None and existing.isRunning():
+            return
         w = ServerCheckWorker(self)
         w.result.connect(lambda ok: self._sig_server.emit(ok))
+        w.finished.connect(w.deleteLater)
         w.start()
         self._chk_w = w
 

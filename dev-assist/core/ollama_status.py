@@ -66,10 +66,10 @@ def _check_running_via_api() -> bool:
     """Try hitting ollama's local API (port 11434)."""
     try:
         import urllib.request
-        req = urllib.request.urlopen(
+        with urllib.request.urlopen(
             "http://127.0.0.1:11434/api/tags", timeout=1
-        )
-        return req.status == 200
+        ) as req:
+            return req.status == 200
     except Exception:
         return False
 

@@ -51,24 +51,29 @@ def run(text: str = ""):
 def send_message(token: str, chat_id: str, text: str) -> bool:
     """Send a message via Telegram Bot API. Returns True on success."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }).encode()
 
-    try:
+    def _post(payload: dict) -> dict | None:
         req = urllib.request.Request(
             url,
-            data=payload,
+            data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return data.get("ok", False)
-    except Exception as e:
-        print(f"  Telegram error: {e}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            print(f"  Telegram error: {e}")
+            return None
+
+    # Try fancy formatting first; fall back to plain text if the message
+    # contains characters the Markdown parser rejects (HTTP 400).
+    data = _post({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+    if data:
+        if data.get("ok", False):
+            return True
         return False
+    data = _post({"chat_id": chat_id, "text": text})
+    return bool(data and data.get("ok", False))
 
 def notify(message: str):
     """Convenience function for other modules to send Telegram notifications."""

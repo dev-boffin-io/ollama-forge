@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Project metadata
@@ -96,10 +96,6 @@ dev = [
 # Entry points
 # ─────────────────────────────────────────────────────────────────────────────
 
-[project.scripts]
-# rename ollama-main.py → ollama_main.py in project root for this to resolve
-ollama-main = "ollama_main:main"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # URLs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +110,6 @@ Issues     = "https://github.com/dev-boffin-io/ollama-forge/issues"
 # ─────────────────────────────────────────────────────────────────────────────
 
 [tool.setuptools]
-py-modules = ["ollama_main"]   # root-level single-file CLI module
 
 [tool.setuptools.packages.find]
 where   = ["."]

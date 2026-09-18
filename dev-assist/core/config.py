@@ -136,9 +136,18 @@ def load_config() -> "AppConfig | dict[str, Any]":
         return cfg
     except ValidationError as exc:
         _warn(f"Config validation failed:\n{exc}\nUsing defaults for invalid fields.")
-        # Try field-by-field to preserve valid values
+        # Field-by-field fallback: keep the fields that are valid,
+        # fall back to defaults only for the ones that aren't.
         try:
-            return AppConfig()
+            valid: dict[str, Any] = {}
+            for field in AppConfig.model_fields:
+                if field in raw:
+                    try:
+                        AppConfig.model_validate({field: raw[field]})
+                        valid[field] = raw[field]
+                    except ValidationError:
+                        pass
+            return AppConfig(**valid)
         except Exception:
             return AppConfig.model_construct()
 

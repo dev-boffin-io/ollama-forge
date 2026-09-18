@@ -102,14 +102,15 @@ def _load_global_config() -> dict:
         cfg = load_config()
         return cfg.model_dump() if hasattr(cfg, "model_dump") else (cfg if isinstance(cfg, dict) else {})
     except Exception:
-        p = os.path.join(
-            os.environ.get("DEV_ASSIST_CONFIG_DIR", ""),
-            "settings.json",
-        ) or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "config", "settings.json"
-        )
+        env_dir = os.environ.get("DEV_ASSIST_CONFIG_DIR", "").strip()
+        if env_dir:
+            p = os.path.join(env_dir, "settings.json")
+        else:
+            p = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "config", "settings.json"
+            )
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
@@ -134,6 +135,11 @@ def _get_ollama_models() -> list[str]:
         return []
 
 
+async def _get_ollama_models_async() -> list[str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _get_ollama_models)
+
+
 # ---------------------------------------------------------------------------
 # Ollama status / control  (delegates to core.ollama_status)
 # ---------------------------------------------------------------------------
@@ -145,6 +151,11 @@ def _ollama_status() -> str:
         return get_status()
     except Exception:
         return "unknown"
+
+
+async def _ollama_status_async() -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _ollama_status)
 
 
 async def _ollama_start() -> str:
@@ -180,6 +191,11 @@ async def _stream_response(sid: str, user_text: str, file_context: str = "", ima
         engine = settings["engine"]
 
     history = _get_history(sid, limit=MAX_CONTEXT_MESSAGES)
+    # api_chat saves the current user message into history before streaming;
+    # drop that last turn here so the enriched last_msg (with file context /
+    # images) replaces it instead of duplicating it.
+    if history and history[-1].get("role") == "user":
+        history = history[:-1]
     msgs = [{"role": m["role"], "content": m["content"]} for m in history]
     full_q = f"{user_text}\n\n--- Attached file ---\n{file_context}" if file_context else user_text
     last_msg = {"role": "user", "content": full_q}
@@ -189,7 +205,7 @@ async def _stream_response(sid: str, user_text: str, file_context: str = "", ima
     msgs.append(last_msg)
 
     if engine == "ollama":
-        if _ollama_status() != "running":
+        if await _ollama_status_async() != "running":
             yield "⚠️ Ollama is stopped. Start it with `ollama on` or the ▶ Start button, then try again."
             return
         try:
@@ -284,7 +300,7 @@ async def api_init(request: Request):
     global_cfg = _load_global_config()
     engine = _get_settings(sid).get("engine") or global_cfg.get("ai_engine", "ollama")
     saved_model = _get_settings(sid).get("ollama_model") or global_cfg.get("ollama_model", "")
-    models = _get_ollama_models()
+    models = await _get_ollama_models_async()
 
     if models:
         initial_model = saved_model if saved_model in models else models[0]
@@ -297,7 +313,7 @@ async def api_init(request: Request):
         "engine": engine,
         "ollama_model": initial_model,
         "models": models,
-        "ollama_status": _ollama_status(),
+        "ollama_status": await _ollama_status_async(),
         "history": _get_history(sid, limit=50),
     })
     resp.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="lax")
@@ -306,19 +322,19 @@ async def api_init(request: Request):
 
 @app.get("/api/status")
 async def api_status():
-    return {"status": _ollama_status()}
+    return {"status": await _ollama_status_async()}
 
 
 @app.post("/api/ollama/start")
 async def api_ollama_start(request: Request):
     sid = _sid_from_request(request)
     result = await _ollama_start()
-    models = _get_ollama_models()
+    models = await _get_ollama_models_async()
     if models:
         cur = _get_settings(sid).get("ollama_model")
         if cur not in models:
             _set_settings(sid, ollama_model=models[0])
-    resp = JSONResponse({"message": result, "status": _ollama_status(), "models": models})
+    resp = JSONResponse({"message": result, "status": await _ollama_status_async(), "models": models})
     resp.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="lax")
     return resp
 
@@ -327,7 +343,7 @@ async def api_ollama_start(request: Request):
 async def api_ollama_stop(request: Request):
     sid = _sid_from_request(request)
     result = await _ollama_stop()
-    resp = JSONResponse({"message": result, "status": _ollama_status()})
+    resp = JSONResponse({"message": result, "status": await _ollama_status_async()})
     resp.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="lax")
     return resp
 
@@ -431,18 +447,28 @@ async def api_chat(
     file_context = ""
     images: list[str] = []
     if file is not None:
+        MAX_UPLOAD_BYTES = 50_000_000
         try:
-            content_bytes = await file.read()
-            from core.attachment_handler import process_attachment_bytes
-            result = process_attachment_bytes(file.filename, content_bytes)
-            if result.has_images():
-                images = result.images
-                file_context = ""  # image goes via `images`, not text injection
-            elif result.has_text():
-                fname, content = result.text_blocks[0]
-                file_context = f"[File: {fname}]\n{content[:8000]}"
+            content_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+            if len(content_bytes) > MAX_UPLOAD_BYTES:
+                file_context = (
+                    f"[File {file.filename} exceeds 50 MB — not attached.]"
+                )
+            elif file.filename and file.filename.lower().endswith(".zip"):
+                # process_attachment_bytes treats .zip as text and would inject
+                # binary garbage; skip the payload entirely.
+                file_context = f"[Zip file {file.filename} not read as text — attach the individual files instead.]"
             else:
-                file_context = result.summary
+                from core.attachment_handler import process_attachment_bytes
+                result = process_attachment_bytes(file.filename, content_bytes)
+                if result.has_images():
+                    images = result.images
+                    file_context = ""  # image goes via `images`, not text injection
+                elif result.has_text():
+                    fname, content = result.text_blocks[0]
+                    file_context = f"[File: {fname}]\n{content[:8000]}"
+                else:
+                    file_context = result.summary
         except Exception as e:
             file_context = f"[Could not read {file.filename}: {e}]"
 

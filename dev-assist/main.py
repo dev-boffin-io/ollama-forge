@@ -168,8 +168,22 @@ def _start_cli() -> None:
 
             import io as _io, sys as _sys
             _buf = _io.StringIO()
+
+            class _Tee:
+                def __init__(self, stream, buf):
+                    self._stream = stream
+                    self._buf = buf
+                def write(self, data):
+                    self._stream.write(data)
+                    self._buf.write(data)
+                    self._stream.flush()
+                    return len(data)
+                def flush(self):
+                    self._stream.flush()
+                    self._buf.flush()
+
             _old_stdout = _sys.stdout
-            _sys.stdout = _buf
+            _sys.stdout = _Tee(_old_stdout, _buf)
             try:
                 handle_input(user_input)
             finally:
@@ -296,7 +310,7 @@ def _parse_args() -> tuple[bool, str, int]:
     """Parse --web, --host, --port from sys.argv without external deps."""
     args = sys.argv[1:]
     web = "--web" in args
-    host = "0.0.0.0"
+    host = "127.0.0.1"  # loopback by default — pass --host 0.0.0.0 to expose
     port = 8000
 
     if "--host" in args:

@@ -67,6 +67,10 @@ ICON_DEST    := $(ICON_DIR)/ollama-forge.png
 DESKTOP_DIR  := $(HOME)/.local/share/applications
 DESKTOP_FILE := $(DESKTOP_DIR)/ollama-forge.desktop
 
+# Use sudo only when INSTALL_BIN isn't user-writable (e.g. /usr/local/bin).
+# If INSTALL_BIN is overridden to ~/.local/bin, sudo is never invoked.
+SUDO := $(shell [ -w "$(INSTALL_BIN)" ] && echo "" || echo "sudo")
+
 # =============================================================================
 # Build targets
 # =============================================================================
@@ -120,11 +124,12 @@ install:  ## Install CLI symlinks + GUI desktop entry
 		fi; \
 	done
 
-	@# ── CLI symlinks (/usr/local/bin — sudo required) ─────────────────────
+	@# ── CLI symlinks (sudo only when INSTALL_BIN is system-owned) ─────────
 	@echo -e "$(BLUE)[→]$(NC) Creating symlinks in $(INSTALL_BIN)..."
-	@sudo ln -sf "$(PROJECT_DIR)/$(BIN_MAIN)" "$(INSTALL_BIN)/ollama-main"
+	@[ -w "$(INSTALL_BIN)" ] || echo -e "$(YELLOW)[!]$(NC) $(INSTALL_BIN) needs sudo — you may be prompted"
+	@$(SUDO) ln -sf "$(PROJECT_DIR)/$(BIN_MAIN)" "$(INSTALL_BIN)/ollama-main"
 	@echo -e "  $(GREEN)✔$(NC)  $(INSTALL_BIN)/ollama-main  →  $(BIN_MAIN)"
-	@sudo ln -sf "$(PROJECT_DIR)/$(BIN_DA)"   "$(INSTALL_BIN)/da"
+	@$(SUDO) ln -sf "$(PROJECT_DIR)/$(BIN_DA)"   "$(INSTALL_BIN)/da"
 	@echo -e "  $(GREEN)✔$(NC)  $(INSTALL_BIN)/da  →  $(BIN_DA)"
 
 	@# ── Icon ──────────────────────────────────────────────────────────────
@@ -171,7 +176,7 @@ uninstall:  ## Remove CLI symlinks, desktop entry, and icon
 
 	@for link in ollama-main da; do \
 		if [ -L "$(INSTALL_BIN)/$$link" ]; then \
-			sudo rm -f "$(INSTALL_BIN)/$$link"; \
+			$(SUDO) rm -f "$(INSTALL_BIN)/$$link"; \
 			echo -e "  $(GREEN)✔$(NC)  Removed $(INSTALL_BIN)/$$link"; \
 		else \
 			echo -e "  $(YELLOW)–$(NC)  $(INSTALL_BIN)/$$link not found, skipping"; \

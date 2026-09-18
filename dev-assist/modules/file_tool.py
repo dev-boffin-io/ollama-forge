@@ -95,7 +95,7 @@ def _bulk_rename(text: str, dry_run: bool = False) -> None:
 
     _out(f"\n  Will rename {len(safe)} files: .{old_ext} → .{new_ext}")
     for f in safe[:5]:
-        new_name = f.replace(f".{old_ext}", f".{new_ext}")
+        new_name = f"{os.path.splitext(f)[0]}.{new_ext}"
         _out(f"    {f} → {new_name}")
     if len(safe) > 5:
         _out(f"    ... and {len(safe)-5} more")
@@ -107,7 +107,7 @@ def _bulk_rename(text: str, dry_run: bool = False) -> None:
     confirm = input("\n  Proceed? [y/N]: ").strip().lower()
     if confirm == "y":
         for f in safe:
-            new_name = f.replace(f".{old_ext}", f".{new_ext}")
+            new_name = f"{os.path.splitext(f)[0]}.{new_ext}"
             os.rename(f, new_name)
         _out(f"  ✅ Renamed {len(safe)} files.")
 

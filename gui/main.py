@@ -1237,6 +1237,13 @@ class OllamaGUI(QMainWindow):
         if not prompt:
             return
 
+        # Don't start a second worker while one is still streaming — the old
+        # thread would keep emitting into the same bubble and _cleanup_thread
+        # would then kill the new thread.
+        if self.thread and self.thread.isRunning():
+            self._log("⏳ Current reply still streaming — please wait.")
+            return
+
         self.last_prompt = prompt
         self.input.clear()
 
@@ -1277,7 +1284,9 @@ class OllamaGUI(QMainWindow):
             ollama_msgs.insert(0, {"role": "system", "content": mem_prefix})
 
         # RAG — search runs inside SmartChatWorker (not on GUI thread)
-        rag_index = self._rag if self._rag_has_data() else None
+        # _rag is cleared after each build/clear; load the persisted index
+        # lazily so normal chat actually uses RAG once a KB exists.
+        rag_index = self._rag_index() if self._rag_has_data() else None
 
         ollama_msgs.append({"role": "user", "content": prompt})
 

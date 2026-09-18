@@ -82,7 +82,6 @@ pip install --quiet \
     requests \
     packaging \
     numpy \
-    sentence-transformers \
     faiss-cpu \
     pypdf \
     python-docx
@@ -103,9 +102,6 @@ rm -rf "$GUI_DIR/build" "$GUI_DIR/dist" "$GUI_DIR/__pycache__" "$GUI_DIR"/*.spec
 HIDDEN=(
     --hidden-import numpy
     --hidden-import faiss
-    --hidden-import sentence_transformers
-    --hidden-import sentence_transformers.models
-    --hidden-import sentence_transformers.losses
     --hidden-import pypdf
     --hidden-import pypdf._reader
     --hidden-import docx

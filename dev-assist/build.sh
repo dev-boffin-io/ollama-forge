@@ -154,7 +154,57 @@ fi
 mkdir -p build
 
 info "Building single binary (this may take a while)..."
-"$PYTHON" -m PyInstaller dev_assist.spec --noconfirm 2>&1 | tee build/pyinstaller.log
+
+DA_HIDDEN=(
+    --hidden-import fastapi
+    --hidden-import uvicorn
+    --hidden-import multipart
+    --hidden-import starlette
+    --hidden-import PIL
+    --hidden-import PIL.Image
+    --hidden-import ollama
+    --hidden-import pydantic
+    --hidden-import rich
+    --hidden-import rich.console
+    --hidden-import prompt_toolkit
+    --hidden-import jinja2
+    --hidden-import requests
+    --hidden-import httpx
+    --hidden-import importlib.metadata
+    --hidden-import pkg_resources
+)
+
+DA_EXCLUDED=(
+    --exclude-module PyQt5
+    --exclude-module PyQt6
+    --exclude-module PySide2
+    --exclude-module PySide6
+    --exclude-module tkinter
+    --exclude-module _tkinter
+    --exclude-module pytest
+    --exclude-module torch
+    --exclude-module tensorflow
+)
+
+DA_DATA=(
+    --add-data "web_app.py:."
+    --add-data "core:core"
+    --add-data "modules:modules"
+    --add-data "plugins:plugins"
+    --add-data "webui:webui"
+    --add-data "config/settings.json:config"
+)
+
+"$PYTHON" -m PyInstaller \
+    --onefile \
+    --name dev-assist \
+    --clean \
+    --noconfirm \
+    --runtime-hook "$SCRIPT_DIR/build_hooks/runtime_hook_paths.py" \
+    "${DA_HIDDEN[@]}" \
+    "${DA_EXCLUDED[@]}" \
+    "${DA_DATA[@]}" \
+    main.py 2>&1 | tee build/pyinstaller.log
 
 BINARY="dist/dev-assist"
 [[ -f "$BINARY" ]] || die "Build failed — binary not found. See build/pyinstaller.log"

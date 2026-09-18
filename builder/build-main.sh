@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-SRC_FILE="$PROJECT_ROOT/ollama-main.py"
+SRC_FILE="$PROJECT_ROOT/dev-assist/ollama-main/main.py"
 DIST_BIN="$PROJECT_ROOT/dist/ollama-main"
 TARGET_BIN="$PROJECT_ROOT/ollama-main"
 
@@ -139,7 +139,7 @@ cd "$PROJECT_ROOT"
     --hidden-import requests \
     --hidden-import packaging \
     --hidden-import packaging.version \
-    ollama-main.py
+    "$SRC_FILE"
 
 # ─────────────────────────────────────────────────────────────
 # Validate build

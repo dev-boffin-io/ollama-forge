@@ -111,6 +111,7 @@ class ChangeTracker:
         newly created are deleted. Returns the list of paths restored.
         """
         restored = []
+        failed = []
         for path in self.touched_paths():
             before = self._first_seen.get(path)
             try:
@@ -122,9 +123,22 @@ class ChangeTracker:
                         f.write(before)
                 restored.append(path)
             except Exception:
-                pass
-        self.entries.clear()
-        self._first_seen.clear()
+                # Keep the entry so a later undo attempt can retry it
+                failed.append(path)
+        # Only clear entries that were actually restored; failed ones stay
+        # tracked so a follow-up `undo` can try them again.
+        if failed:
+            self.entries = {
+                path: snapshots for path, snapshots in self.entries.items()
+                if path in failed
+            }
+            self._first_seen = {
+                path: content for path, content in self._first_seen.items()
+                if path in failed
+            }
+        else:
+            self.entries.clear()
+            self._first_seen.clear()
         return restored
 
     def has_changes(self) -> bool:
