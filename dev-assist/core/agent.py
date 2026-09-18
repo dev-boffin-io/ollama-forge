@@ -31,6 +31,7 @@ from core.tools import (
     describe_call,
     execute_tool,
 )
+from core import change_tracker
 
 MAX_STEPS = 24
 
@@ -177,6 +178,7 @@ def run_agent(
     """
     workdir = os.path.abspath(workdir or os.getcwd())
     approver = approver or auto_approve_readonly
+    tracker = change_tracker.new_run()
 
     def emit(kind: str, text: str) -> None:
         if on_event:
@@ -228,14 +230,29 @@ def run_agent(
             emit("tool", describe_call(name, args))
 
             if name in DESTRUCTIVE_TOOLS and not approver(name, args):
+                reason = getattr(approver, "last_reason", None)
                 result = (
-                    f"Denied by user: the {name} call was not approved. "
-                    f"Do not retry it; ask the user how to proceed instead."
+                    f"Denied by user: the {name} call was not approved"
+                    + (f" (reason: {reason})" if reason else "")
+                    + ". Do not retry it as-is; ask the user how to proceed, "
+                      "or try a different approach if one is clear from the reason given."
                 )
                 emit("warn", f"denied: {describe_call(name, args)}")
             else:
+                if name in ("write_file", "edit_file"):
+                    from core.tools import resolve_path
+                    file_path = resolve_path(args.get("path"), workdir)
+                    tracker.snapshot(file_path)
+
                 result = execute_tool(name, args, workdir)
                 emit("result", result)
+
+                if name in ("write_file", "edit_file") and not result.startswith("Error"):
+                    try:
+                        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                            tracker.record(file_path, f.read())
+                    except Exception:
+                        pass
 
             messages.append({
                 "role": "tool",
