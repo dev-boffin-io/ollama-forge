@@ -22,6 +22,7 @@ INTENTS = [
 
     # ── Agent mode (must precede RAG fallthrough: "do/agent ..." wins) ────
     (r"^\s*(do|agent)\b",                 "modules.agent_mode",    "run"),
+    (r"^\s*undo\s*$",                     "modules.agent_mode",    "undo"),
 
     # ── RAG / Indexing ────────────────────────────────────────────────────
     (r"\b(index|idx)\b",                  "modules.indexer",       "run"),
@@ -323,6 +324,7 @@ def _show_help() -> None:
   agent <task>             →  same as 'do'
   do <task> --yes          →  skip approval prompts
   do <task> --verbose      →  show full tool output
+  undo                     →  revert every file the last run changed
   [dim]e.g. do fix the failing test in tests/[/dim]
   [dim]Needs a tool-capable model (qwen2.5-coder:7b, llama3.1:8b, or API mode)[/dim]
 

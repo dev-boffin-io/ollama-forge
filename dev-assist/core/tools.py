@@ -225,6 +225,12 @@ def _resolve(path: str | None, workdir: str) -> str:
     return os.path.normpath(path)
 
 
+def resolve_path(path: str | None, workdir: str) -> str:
+    """Public wrapper so callers (e.g. the agent loop, for change tracking)
+    can resolve a tool's path argument the same way the tools themselves do."""
+    return _resolve(path, workdir)
+
+
 def _walk(root: str):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
