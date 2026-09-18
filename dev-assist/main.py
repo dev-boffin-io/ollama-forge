@@ -72,6 +72,12 @@ def _start_cli() -> None:
     from core.router import handle_input
     from core.banner import show_banner
 
+    try:
+        from prompt_toolkit.patch_stdout import patch_stdout
+    except ImportError:
+        import contextlib
+        patch_stdout = contextlib.nullcontext  # no-op if prompt_toolkit isn't installed
+
     show_banner()
 
     # Show index status on startup
@@ -98,98 +104,84 @@ def _start_cli() -> None:
     # Setup readline / prompt_toolkit for history + completion
     prompt_fn = _build_prompt_fn()
 
-    while True:
-        try:
-            # ── Show ollama status line above prompt ───────────────────────
-            _print_ollama_status()
-            user_input = prompt_fn()
-        except (KeyboardInterrupt, EOFError):
-            _print("\n\n👋 Bye!")
-            sys.exit(0)
+    with patch_stdout():
+        while True:
+            try:
+                user_input = prompt_fn()
+            except (KeyboardInterrupt, EOFError):
+                _print("\n\n👋 Bye!")
+                sys.exit(0)
 
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "q"):
-            _print("👋 Bye!")
-            sys.exit(0)
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit", "q"):
+                _print("👋 Bye!")
+                sys.exit(0)
 
-        # ── Ollama on/off commands ─────────────────────────────────────────
-        cmd_lower = user_input.strip().lower()
-        if cmd_lower in ("ollama on", "ollama start"):
-            from core.ollama_status import start_ollama
-            _print(start_ollama())
-            continue
-        if cmd_lower in ("ollama off", "ollama stop"):
-            from core.ollama_status import stop_ollama
-            _print(stop_ollama())
-            continue
-        if cmd_lower in ("ollama status",):
-            from core.ollama_status import get_status_line
-            _print(get_status_line())
-            continue
+            # ── Ollama on/off commands ─────────────────────────────────────────
+            cmd_lower = user_input.strip().lower()
+            if cmd_lower in ("ollama on", "ollama start"):
+                from core.ollama_status import start_ollama
+                _print(start_ollama())
+                continue
+            if cmd_lower in ("ollama off", "ollama stop"):
+                from core.ollama_status import stop_ollama
+                _print(stop_ollama())
+                continue
+            if cmd_lower in ("ollama status",):
+                from core.ollama_status import get_status_line
+                _print(get_status_line())
+                continue
 
-        # ── Special CLI history commands ───────────────────────────────────
-        raw     = user_input.strip()
-        cmd_raw = raw.lower()
-        if cmd_raw in ("history", "/history"):
-            from core.cli_history import show
-            show()
-            continue
-        if cmd_raw in ("clear history", "/clear"):
-            from core.cli_history import clear
-            clear()
-            _print("🗑️  CLI history cleared.")
-            continue
+            # ── Special CLI history commands ───────────────────────────────────
+            raw     = user_input.strip()
+            cmd_raw = raw.lower()
+            if cmd_raw in ("history", "/history"):
+                from core.cli_history import show
+                show()
+                continue
+            if cmd_raw in ("clear history", "/clear"):
+                from core.cli_history import clear
+                clear()
+                _print("🗑️  CLI history cleared.")
+                continue
 
-        # ── Shell command execution ──────────────────────────────────────
-        # !run <cmd>  → explicit force-run (e.g. !run find . -name *.py)
-        # !<cmd>      → shell shortcut  (e.g. !ls -la)
-        # anything else → AI / router
-        if raw.startswith("!run "):
-            from modules.shell_exec import run_shell_command
-            run_shell_command(raw[5:].strip())
-            continue
-        if raw.startswith("!"):
-            from modules.shell_exec import run_shell_command
-            run_shell_command(raw[1:].strip())
-            continue
+            # ── Shell command execution ──────────────────────────────────────
+            # !run <cmd>  → explicit force-run (e.g. !run find . -name *.py)
+            # !<cmd>      → shell shortcut  (e.g. !ls -la)
+            # anything else → AI / router
+            if raw.startswith("!run "):
+                from modules.shell_exec import run_shell_command
+                run_shell_command(raw[5:].strip())
+                continue
+            if raw.startswith("!"):
+                from modules.shell_exec import run_shell_command
+                run_shell_command(raw[1:].strip())
+                continue
 
-        # Save user input to CLI history, then handle
-        try:
-            from core.cli_history import save as _cli_save
-            _cli_save("user", raw)
-        except Exception:
-            pass
-
-        import io as _io, sys as _sys
-        _buf = _io.StringIO()
-        _old_stdout = _sys.stdout
-        _sys.stdout = _buf
-        try:
-            handle_input(user_input)
-        finally:
-            _sys.stdout = _old_stdout
-        _out = _buf.getvalue()
-        if _out:
-            print(_out, end="")
+            # Save user input to CLI history, then handle
             try:
                 from core.cli_history import save as _cli_save
-                _cli_save("assistant", _out.strip())
+                _cli_save("user", raw)
             except Exception:
                 pass
 
-
-def _print_ollama_status() -> None:
-    """Print ollama status line above the prompt (no trailing newline — prompt follows)."""
-    try:
-        from core.ollama_status import get_status_line
-        line = get_status_line()
-        # sys.stdout.write keeps it on the same visual block as the prompt below
-        import sys as _sys
-        _sys.stdout.write(line + "\n")
-        _sys.stdout.flush()
-    except Exception:
-        pass
+            import io as _io, sys as _sys
+            _buf = _io.StringIO()
+            _old_stdout = _sys.stdout
+            _sys.stdout = _buf
+            try:
+                handle_input(user_input)
+            finally:
+                _sys.stdout = _old_stdout
+            _out = _buf.getvalue()
+            if _out:
+                print(_out, end="")
+                try:
+                    from core.cli_history import save as _cli_save
+                    _cli_save("assistant", _out.strip())
+                except Exception:
+                    pass
 
 
 def _get_prompt_str() -> str:
@@ -228,6 +220,8 @@ def _build_prompt_fn():
             "model", "model list", "model set", "model engine ollama", "model engine api",
             "ollama on", "ollama off", "ollama status",
             "history", "clear history",
+            # agent mode
+            "do ", "agent ", "undo",
             # shell shortcuts
             "!ls", "!ls -la", "!pwd", "!cat", "!grep", "!ps aux",
             "!df -h", "!free -h", "!top", "!htop", "!ping", "!curl",
@@ -235,14 +229,27 @@ def _build_prompt_fn():
             "!run find . -name",
         ]
 
+        from prompt_toolkit.styles import Style
+        from core import tui_status
+
+        toolbar_style = Style.from_dict({
+            "toolbar": "bg:#333333 #ffffff",
+            "toolbar.activity": "bg:#333333 #ffcc00",
+        })
+
         session = PromptSession(
             history=InMemoryHistory(),
             auto_suggest=AutoSuggestFromHistory(),
             completer=WordCompleter(COMPLETIONS, ignore_case=True),
+            style=toolbar_style,
         )
 
         def _pt_prompt() -> str:
-            return session.prompt(_get_prompt_str()).strip()
+            return session.prompt(
+                _get_prompt_str(),
+                bottom_toolbar=tui_status.render_bottom_toolbar,
+                refresh_interval=1.0,  # keeps the status bar live while idle
+            ).strip()
 
         return _pt_prompt
 
