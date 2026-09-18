@@ -3,6 +3,7 @@
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -260,7 +261,7 @@ def uninstall():
     prefix = sudo_prefix()
 
     # Stop and disable systemd service if present
-    if subprocess.run(
+    if shutil.which("systemctl") and subprocess.run(
         ["systemctl", "is-active", "--quiet", "ollama"],
         capture_output=True
     ).returncode == 0:

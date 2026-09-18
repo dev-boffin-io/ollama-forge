@@ -112,7 +112,14 @@ install_ollama() {
             ;;
         alpine)
             ARCH=$(uname -m)
-            case $ARCH in x86_64) OL_ARCH="amd64" ;; aarch64) OL_ARCH="arm64" ;; *) OL_ARCH="amd64" ;; esac
+            case $ARCH in
+                x86_64|amd64) OL_ARCH="amd64" ;;
+                aarch64|arm64) OL_ARCH="arm64" ;;
+                *)
+                    warn "Unrecognized architecture: $ARCH — defaulting to amd64"
+                    OL_ARCH="amd64"
+                    ;;
+            esac
             curl -fsSL "https://ollama.com/download/ollama-linux-${OL_ARCH}" \
                 -o /usr/local/bin/ollama && chmod +x /usr/local/bin/ollama
             ;;

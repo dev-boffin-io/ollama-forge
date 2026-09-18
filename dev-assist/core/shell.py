@@ -179,7 +179,13 @@ def run(
 def run_git(*args: str, cwd: str | None = None) -> RunResult:
     """Convenience wrapper for git commands."""
     import os
-    return run(["git"] + list(args), cwd=cwd or os.getcwd(), timeout=15)
+    if cwd is None:
+        try:
+            from modules.shell_exec import get_cwd
+            cwd = get_cwd()
+        except Exception:
+            cwd = os.getcwd()
+    return run(["git"] + list(args), cwd=cwd, timeout=15)
 
 
 def check_binary(name: str) -> bool:

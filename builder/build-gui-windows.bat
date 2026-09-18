@@ -54,7 +54,7 @@ echo [→] Installing PyQt6...
 pip install --quiet "PyQt6>=6.6.0" "PyQt6-Qt6>=6.6.0" "PyQt6-sip>=13.6.0"
 
 echo [→] Installing runtime dependencies...
-pip install --quiet requests packaging numpy sentence-transformers faiss-cpu pypdf python-docx
+pip install --quiet requests packaging numpy faiss-cpu pypdf python-docx
 
 REM ── PyInstaller ─────────────────────────────────────────────────────────
 echo [→] Installing PyInstaller...
@@ -76,9 +76,6 @@ REM ── Shared flags ──────────────────�
 set HIDDEN=^
     --hidden-import numpy ^
     --hidden-import faiss ^
-    --hidden-import sentence_transformers ^
-    --hidden-import sentence_transformers.models ^
-    --hidden-import sentence_transformers.losses ^
     --hidden-import pypdf ^
     --hidden-import pypdf._reader ^
     --hidden-import docx ^

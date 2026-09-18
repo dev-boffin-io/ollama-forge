@@ -303,21 +303,22 @@ def _tool_list_dir(args: dict, workdir: str) -> str:
 
 
 def _tool_glob(args: dict, workdir: str) -> str:
+    import glob as _glob
     pattern = args.get("pattern") or "*"
     root = _resolve(args.get("path"), workdir)
     if not os.path.isdir(root):
         return f"Error: not a directory: {root}"
 
-    # fnmatch doesn't treat '**' specially, so normalise it to a plain
-    # substring match against the repo-relative path.
-    simple = pattern.replace("**/", "")
+    # Use real glob semantics so '**' means recursive (unlike fnmatch).
+    full_pattern = os.path.join(root, pattern)
     hits = []
-    for full in _walk(root):
+    for full in _glob.glob(full_pattern, recursive=True):
+        if os.path.isdir(full):
+            continue
         rel = os.path.relpath(full, root)
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(os.path.basename(full), simple):
-            hits.append(rel)
-            if len(hits) >= MAX_GLOB_RESULTS:
-                break
+        hits.append(rel)
+        if len(hits) >= MAX_GLOB_RESULTS:
+            break
 
     if not hits:
         return f"No files matching {pattern!r} under {root}"
@@ -417,7 +418,12 @@ def _tool_bash(args: dict, workdir: str) -> str:
     command = args.get("command")
     if not command:
         return "Error: command is required."
-    timeout = int(args.get("timeout") or BASH_TIMEOUT)
+    try:
+        timeout = int(args.get("timeout") or BASH_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout = BASH_TIMEOUT
+    # timeout<=0 would disable the limit entirely — treat it as "use default"
+    timeout = timeout if timeout > 0 else BASH_TIMEOUT
     try:
         proc = subprocess.run(
             command, shell=True, cwd=workdir, capture_output=True,

@@ -115,6 +115,11 @@ def _ask_ollama(prompt: str, cfg, *, capture_output: bool = False) -> str | None
         try:
             from core.session import get_session
             history = get_session().to_ollama_messages()
+            # If the current prompt is already saved as the last user turn
+            # (router adds it before calling), drop it to avoid duplication.
+            if (history and history[-1].get("role") == "user"
+                    and history[-1].get("content") == prompt):
+                history = history[:-1]
             if history:
                 # Use chat API for multi-turn
                 messages = history + [{"role": "user", "content": prompt}]

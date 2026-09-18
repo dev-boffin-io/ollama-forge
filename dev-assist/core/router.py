@@ -32,21 +32,20 @@ INTENTS = [
     (r"\baudit\b",                        "modules.code_audit",    "run"),
 
     # ── Command helper ────────────────────────────────────────────────────
-    (r"\bfix\s+port\s+(\d+)",             "modules.cmd_helper",    "fix_port"),
-    (r"\bkill\s+port\s+(\d+)",            "modules.cmd_helper",    "fix_port"),
-    (r"\bport\s+(\d+)\b",                 "modules.cmd_helper",    "fix_port"),
+    (r"^\s*(?:fix|kill)\s+port\s+(\d+)",  "modules.cmd_helper",    "fix_port"),
+    (r"^\s*port\s+(\d+)",                 "modules.cmd_helper",    "fix_port"),
 
     # ── Tunnel ────────────────────────────────────────────────────────────
-    (r"\btunnel\b",                       "modules.tunnel_helper", "run"),
-    (r"\bngrok\b",                        "modules.tunnel_helper", "run"),
-    (r"\bexpose\s+(\d+)",                 "modules.tunnel_helper", "run"),
+    (r"^\s*(?:start\s+|open\s+)?tunnel\b", "modules.tunnel_helper", "run"),
+    (r"^\s*ngrok\b",                      "modules.tunnel_helper", "run"),
+    (r"^\s*(?:expose|open)\s+(\d+)",      "modules.tunnel_helper", "run"),
 
     # ── Git ───────────────────────────────────────────────────────────────
-    (r"\bgit\s+(push|pull|rebase|fix)",   "modules.git_helper",    "run"),
-    (r"\bconflict\b",                     "modules.git_helper",    "run"),
+    (r"^\s*git\s+(push|pull|rebase|fix)", "modules.git_helper",    "run"),
+    (r"^\s*conflict\b",                   "modules.git_helper",    "run"),
 
     # ── File tools ────────────────────────────────────────────────────────
-    (r"\brename\b|\bclean\b",             "modules.file_tool",     "run"),
+    (r"^\s*(?:rename|clean)\b",           "modules.file_tool",     "run"),
 
     # ── Built-ins ─────────────────────────────────────────────────────────
     (r"^model\b",                         None,                    "model_select"),
@@ -145,9 +144,8 @@ def _plain_ai_with_history(text: str) -> None:
         from core.session import get_session
         from core.ai import ask_ai
         sess = get_session()
-        prompt = sess.build_history_prompt(text)
         sess.add_user(text)
-        response = ask_ai(prompt, capture_output=True)
+        response = ask_ai(text, capture_output=True)
         if response:
             sess.add_assistant(response)
     except Exception as exc:

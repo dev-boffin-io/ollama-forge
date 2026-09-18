@@ -268,19 +268,22 @@ def _semantic_chunks(filepath: str, content: str) -> list[dict]:
         return []  # no boundaries → use line chunks
 
     chunks = []
+    pending_start = boundary_lines[0]
     for i in range(len(boundary_lines) - 1):
         start = boundary_lines[i]
         end = boundary_lines[i + 1]
 
-        # Merge tiny sections with next
+        # Merge tiny sections with the next section instead of dropping them
         if end - start < 5 and i + 1 < len(boundary_lines) - 1:
             continue
+        start = pending_start
 
         # Cap very large sections
         if end - start > 80:
             # Sub-chunk with overlap
             sub = _line_chunks_range(filepath, lines, start, end)
             chunks.extend(sub)
+            pending_start = end
             continue
 
         chunk_lines = lines[start:end]
@@ -292,6 +295,7 @@ def _semantic_chunks(filepath: str, content: str) -> list[dict]:
                 "end_line": end,
                 "filepath": filepath,
             })
+        pending_start = end
 
     return chunks
 

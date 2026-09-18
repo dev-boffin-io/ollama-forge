@@ -83,7 +83,8 @@ def read_ollama_username() -> str | None:
     ]:
         if os.path.exists(path):
             try:
-                d = json.loads(open(path, encoding="utf-8").read())
+                with open(path, encoding="utf-8") as f:
+                    d = json.loads(f.read())
                 u = d.get("username") or d.get("user") or d.get("name")
                 if u:
                     return str(u)

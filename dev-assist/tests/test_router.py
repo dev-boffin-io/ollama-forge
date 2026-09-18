@@ -56,13 +56,13 @@ class TestIntentPatterns:
 
     # Tunnel
     def test_tunnel(self):
-        assert _match("tunnel") == "run_tunnel" or _match("tunnel") == "run"
+        assert _match("tunnel") == "run"
 
     def test_ngrok(self):
-        assert _match("ngrok") is not None
+        assert _match("ngrok") == "run"
 
     def test_expose_port(self):
-        assert _match("expose 3000") is not None
+        assert _match("expose 3000") == "run"
 
     # Git
     def test_git_push(self):

@@ -161,6 +161,7 @@ cd /d "%DA_DIR%"
     --console ^
     --name da ^
     --clean ^
+    --runtime-hook "%DA_DIR%\build_hooks\runtime_hook_paths.py" ^
     %DA_HIDDEN% ^
     %DA_EXCLUDED% ^
     %DA_DATA% ^

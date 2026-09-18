@@ -45,46 +45,46 @@ case "$PKG_MGR" in
         info "Using apt (Debian / Ubuntu / Mint / PRoot)"
         apt-get update -qq
         apt-get install -y \
-            python3-pyqt5 \
+            python3-pyqt6 \
             libgl1-mesa-dev \
             libxcb-xinerama0
-        # pyqt5-dev-tools is optional — not needed for runtime or build
-        apt-get install -y pyqt5-dev-tools 2>/dev/null \
-            || warn "pyqt5-dev-tools not available — skipping (not required)"
+        # pyqt6-dev-tools is optional — not needed for runtime or build
+        apt-get install -y pyqt6-dev-tools 2>/dev/null \
+            || warn "pyqt6-dev-tools not available — skipping (not required)"
         ;;
     dnf|yum)
         info "Using $PKG_MGR (Fedora / RHEL / AlmaLinux)"
         "$PKG_MGR" install -y \
-            python3-qt5 \
+            python3-pyqt6 \
             mesa-libGL-devel \
             libxcb
-        # python3-qt5-devel optional
-        "$PKG_MGR" install -y python3-qt5-devel 2>/dev/null \
-            || warn "python3-qt5-devel not available — skipping (not required)"
+        # python3-qt6-devel optional
+        "$PKG_MGR" install -y python3-qt6-devel 2>/dev/null \
+            || warn "python3-qt6-devel not available — skipping (not required)"
         ;;
     pacman)
         info "Using pacman (Arch / Manjaro)"
         pacman -Sy --noconfirm \
-            python-pyqt5 \
+            python-pyqt6 \
             mesa \
             libxcb
         ;;
     zypper)
         info "Using zypper (openSUSE)"
         zypper --non-interactive install \
-            python3-qt5 \
+            python3-qt6 \
             libGL-devel \
             libxcb-devel
         ;;
     apk)
         info "Using apk (Alpine)"
         apk add --no-cache \
-            py3-pyqt5 \
+            py3-pyqt6 \
             mesa-gl \
             libxcb
         ;;
     *)
-        die "Unsupported package manager. Install manually: python3-pyqt5  libGL  libxcb-xinerama"
+        die "Unsupported package manager. Install manually: python3-pyqt6  libGL  libxcb-xinerama"
         ;;
 esac
 
@@ -100,16 +100,16 @@ for candidate in python3 python; do
 done
 
 if [ -z "${PY_BIN:-}" ]; then
-    warn "No Python interpreter found — cannot verify PyQt5"
+    warn "No Python interpreter found — cannot verify PyQt6"
 else
-    if "$PY_BIN" -c "from PyQt5 import QtCore; print('PyQt5', QtCore.PYQT_VERSION_STR)" 2>/dev/null; then
-        success "PyQt5 OK"
+    if "$PY_BIN" -c "from PyQt6 import QtCore; print('PyQt6', QtCore.PYQT_VERSION_STR)" 2>/dev/null; then
+        success "PyQt6 OK"
     else
-        warn "PyQt5 import failed — check installation above"
+        warn "PyQt6 import failed — check installation above"
         exit 1
     fi
 fi
 
 header "Done!"
 success "GUI dependencies installed."
-printf "\n${BOLD}Next step:${RESET} ${BLUE}./builder/build-gui-bin.sh${RESET}\n\n"
+printf "\n${BOLD}Next step:${RESET} ${BLUE}./builder/build-gui-linux-amd64.sh${RESET} (or ${BLUE}./builder/build-gui-linux-arm64.sh${RESET} on ARM64)\n\n"

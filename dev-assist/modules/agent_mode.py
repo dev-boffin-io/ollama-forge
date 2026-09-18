@@ -241,7 +241,11 @@ def run(text: str) -> None:
         _print("[dim]After a run: 'undo' reverts every file it changed.[/dim]")
         return
 
-    workdir = os.getcwd()
+    try:
+        from modules.shell_exec import get_cwd
+        workdir = get_cwd()
+    except Exception:
+        workdir = os.getcwd()
     _print(f"[bold cyan]🤖 agent[/bold cyan] [dim]{workdir}[/dim]")
     _print(f"[dim]task:[/dim] {task}\n")
 

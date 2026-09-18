@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Local AI Toolkit for Linux — 100% Offline, 100% Private</strong><br/>
-  Ollama lifecycle management · PyQt5 desktop chat with RAG · AI-powered DevOps assistant
+  Ollama lifecycle management · PyQt6 desktop chat with RAG · AI-powered DevOps assistant
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 | Component | Binary | Role |
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
-| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt5 desktop chat with multi-model support, FAISS RAG, Groq API backend, vision models, file/ZIP attachments, markdown rendering, and crew multi-agent mode |
+| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with multi-model support, FAISS RAG, Groq API backend, vision models, file/ZIP attachments, markdown rendering, and crew multi-agent mode |
 | [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
@@ -52,7 +52,7 @@ Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** �
 git clone https://github.com/dev-boffin-io/ollama-forge.git
 cd ollama-forge
 
-# 2. Install system dependencies (ARM64/Debian — GUI build only)
+# 2. Install system dependencies (GUI build only; needs sudo for apt/dnf/etc.)
 sudo bash builder/install-deps-gui.sh
 
 # 3. Build everything
@@ -100,7 +100,7 @@ ollama-main uninstall   # Stop service, disable systemd unit, remove all paths
 
 ## Ollama GUI
 
-`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt5**. It communicates with a locally running Ollama server via its REST API or the Groq cloud API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without LangChain.
+`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt6**. It communicates with a locally running Ollama server via its REST API or the Groq cloud API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without LangChain.
 
 ### API Mode Toggle — Local vs Groq
 
@@ -278,9 +278,9 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 
 | Package | Role |
 |---------|------|
-| `PyQt5 >= 5.15` | GUI framework |
+| `PyQt6 >= 6.6` | GUI framework |
 | `requests >= 2.28` | Ollama REST API, Groq API, GitHub version check |
-| `sentence-transformers >= 2.2` | HuggingFace embedding backend |
+| `sentence-transformers >= 2.6` | Optional embedding backend (falls back to hashed TF-IDF when unavailable) |
 | `faiss-cpu >= 1.7` | Vector index for RAG |
 | `pypdf >= 3.0` | PDF document loading |
 | `python-docx >= 1.0` | DOCX document loading |
@@ -712,10 +712,10 @@ dev-assist/config/
 Each component builds in an isolated venv to avoid dependency conflicts. The venv is deleted and recreated on every build, ensuring clean, reproducible output.
 
 ```bash
-make all                  # Build all three binaries
-make build-main           # → ./ollama-main   (PyInstaller onefile)
-make build-gui            # → ./Ollama-ai-gui + ./Ollama-ai-manager
-make build-dev-assist     # → ./da
+make all                  # Build GUI + da + ollama-main (all in bin/)
+make build-main           # → bin/dev-assist/ollama-main   (PyInstaller onefile)
+make build-gui            # → bin/Ollama-GUI/Ollama-ai-gui + Ollama-ai-manager
+make build-dev-assist     # → bin/dev-assist/da
 ```
 
 ### Install and uninstall
@@ -728,9 +728,9 @@ make uninstall                            # Remove symlinks, .desktop entry, ico
 ```
 
 `make install` creates:
-- `/usr/local/bin/ollama-main` → `$PROJECT_DIR/ollama-main`
-- `/usr/local/bin/da` → `$PROJECT_DIR/da`
-- `~/.local/share/icons/hicolor/1024x1024/apps/ollama-forge.png`
+- `/usr/local/bin/ollama-main` → `$PROJECT_DIR/bin/dev-assist/ollama-main` (or per `INSTALL_BIN`)
+- `/usr/local/bin/da` → `$PROJECT_DIR/bin/dev-assist/da` (or per `INSTALL_BIN`)
+- `~/.local/share/icons/hicolor/512x512/apps/ollama-forge.png`
 - `~/.local/share/applications/ollama-forge.desktop`
 
 The `.desktop` entry uses the absolute project path in `Exec=` so the binary can live anywhere on disk. `gtk-update-icon-cache` and `update-desktop-database` are called automatically after install and uninstall.
@@ -751,13 +751,12 @@ pip install -e ".[all,dev]"          # Everything
 ### All make targets
 
 ```
-make all               Build all three binaries
-make build-main        Build ollama-main CLI binary → ./ollama-main
-make build-gui         Build GUI binaries → ./Ollama-ai-gui + ./Ollama-ai-manager
-make build-dev-assist  Build dev-assist binary → ./da
-make install           Install CLI symlinks + GUI desktop entry
+make all               Build GUI + da + ollama-main into bin/
+make build-main        Build ollama-main CLI binary → bin/dev-assist/ollama-main
+make build-gui         Build GUI binaries → bin/Ollama-GUI/Ollama-ai-gui + Ollama-ai-manager
+make build-dev-assist  Build dev-assist binary → bin/dev-assist/da
+make install           Install CLI symlinks + GUI desktop entry (sudo only when needed)
 make uninstall         Remove symlinks, desktop entry, and icon
-make install-deps-gui  Install system Qt/Python deps (ARM64/Debian, requires sudo)
 make test              Run dev-assist pytest suite
 make lint              Ruff + black --check
 make format            Black + isort auto-fix
@@ -787,7 +786,7 @@ All three components are tested on ARM64 Debian and proot-Termux environments. B
 sudo bash builder/install-deps-gui.sh
 ```
 
-This installs PyQt5 bindings, BLAS libraries (required by FAISS and sentence-transformers on ARM64), and other packages that must come from the system APT repository rather than being bundled by pip wheels.
+This installs PyQt6 bindings, the BLAS libraries required by FAISS on ARM64, and other packages that must come from the system package repository rather than being bundled by pip wheels. The script detects the running package manager (apt, dnf, pacman, zypper, apk).
 
 The `_syspath_patch.py` module (imported first in both GUI entry points via `import _syspath_patch`) injects system site-packages into the frozen binary's `sys.path` at startup. This allows PyInstaller binaries to use system-installed Qt bindings on ARM64 where building a self-contained Qt bundle inside the binary is impractical due to size and native library linking constraints.
 
@@ -797,14 +796,14 @@ The `_syspath_patch.py` module (imported first in both GUI entry points via `imp
 
 ```
 ollama-forge/
-├── ollama-main.py              Ollama CLI lifecycle manager (entry point)
+├── dev-assist/ollama-main/main.py    Ollama CLI lifecycle manager (entry point)
 ├── ollama-forge.png            Project icon (1024 × 1024 PNG)
 ├── pyproject.toml              Package metadata, extras, tool configuration
 ├── Makefile                    Build, install, test, format targets
 ├── LICENSE                     MIT + third-party acknowledgements
 ├── README.md
 │
-├── gui/                        PyQt5 desktop chat + manager
+├── gui/                        PyQt6 desktop chat + manager
 │   ├── main.py                 Main window — layout, mode toggle, theme, chat popup
 │   ├── ollama_client.py        Ollama REST API client
 │   ├── groq_client.py          Groq API client (streaming, vision, model list)
@@ -836,9 +835,11 @@ ollama-forge/
 │
 └── builder/                    PyInstaller build scripts
     ├── build-main.sh           Build ollama-main binary
-    ├── build-gui-bin.sh        Build GUI binaries
-    ├── build-dev-assist.sh     Build da binary
-    └── install-deps-gui.sh     System Qt/Python deps for ARM64/Debian
+    ├── build-gui-linux-amd64.sh / build-gui-linux-arm64.sh / build-gui-windows.bat
+    │                           Build GUI binaries per platform
+    ├── build-da-linux-amd64.sh / build-da-linux-arm64.sh / build-da-windows.bat
+    │                           Build da binary per platform
+    └── install-deps-gui.sh     System Qt/Python deps (per package manager)
 ```
 
 ---

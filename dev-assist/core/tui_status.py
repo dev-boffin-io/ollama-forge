@@ -83,7 +83,11 @@ def render_bottom_toolbar():
     status = _cached_ollama_status()
     dot = _STATUS_DOTS.get(status, "❓")
 
-    cwd = os.getcwd()
+    try:
+        from modules.shell_exec import get_cwd
+        cwd = get_cwd()
+    except Exception:
+        cwd = os.getcwd()
     home = os.path.expanduser("~")
     if cwd.startswith(home):
         cwd = "~" + cwd[len(home):]
