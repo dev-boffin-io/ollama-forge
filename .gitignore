@@ -37,7 +37,8 @@ MANIFEST
 *.manifest
 *.spec
 
-!dev-assist/dev_assist.spec
+# Build isolation venvs created by builder/*.sh / *.bat
+builder/.venv-*
 
 # Installer logs
 pip-log.txt
