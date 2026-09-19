@@ -39,6 +39,7 @@ from core.tools import (
     execute_tool,
 )
 from core import change_tracker
+from core.repo_map import build_repo_map
 
 MAX_STEPS = 24             # per sub-task step budget
 MAX_SUBTASKS = 5           # how many sub-tasks a plan may contain
@@ -76,8 +77,18 @@ instructions for that step, along with the results of earlier steps.
 """
 
 
-def _plan_prompt_task(task: str) -> str:
-    return f"Overall task:\n{task}"
+def _plan_prompt_task(task: str, repo_map: str = "") -> str:
+    prompt = f"Overall task:\n{task}"
+    if repo_map:
+        prompt += f"\n\nProject layout:\n{repo_map}"
+    return prompt
+
+
+def _map_block(text: str) -> str:
+    """Wrap a repo map for injection into a prompt, if there is one."""
+    if not text:
+        return ""
+    return f"## Project layout\n{text}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -195,6 +206,7 @@ def _plan_subtasks(
     cfg,
     engine: str,
     model: str | None,
+    repo_map: str = "",
 ) -> list[dict]:
     """Ask the model to break the task into sub-tasks.
 
@@ -203,7 +215,7 @@ def _plan_subtasks(
     """
     messages = [
         {"role": "system", "content": PLANNING_PROMPT},
-        {"role": "user", "content": _plan_prompt_task(task)},
+        {"role": "user", "content": _plan_prompt_task(task, repo_map)},
     ]
     try:
         message = (
@@ -291,9 +303,13 @@ def _build_subtask_context(
     plan: list[dict],
     idx: int,
     results: list[dict],
+    repo_map: str = "",
 ) -> str:
     """Context block for one sub-task, carrying prior sub-task results forward."""
     parts = [f"## Overall task\n{task}"]
+
+    if repo_map:
+        parts.append(f"\n{repo_map}")
 
     if len(plan) > 1:
         lines = ["\n## Plan"]
@@ -471,6 +487,11 @@ def run_agent(
                 with kind in {"tool", "result", "text", "warn", "plan"}.
     max_steps — per sub-task step budget (default 24).
 
+    Before planning, the project's layout (file tree + top-level
+    signatures) is injected as a repo map. For large projects the map is
+    narrowed by similarity search to files relevant to the task — and, for
+    multi-sub-task runs, re-narrowed per sub-task goal.
+
     Returns the agent's final combined answer.
     """
     workdir = os.path.abspath(workdir or os.getcwd())
@@ -486,9 +507,20 @@ def run_agent(
     engine = _get_engine(cfg)
     model = _get_ollama_model(cfg) if engine == "ollama" else None
 
+    # ── Project layout ──
+    # A compact repo map (file tree + top-level signatures) goes into the
+    # system prompt so the agent knows the layout before it starts. Large
+    # projects are narrowed by the indexer's similarity search instead.
+    map_info = build_repo_map(task, workdir)
+    map_block = _map_block(map_info["text"])
+
     # ── Planning phase ──
-    plan = _plan_subtasks(task, cfg, engine, model)
+    plan = _plan_subtasks(task, cfg, engine, model, repo_map=map_block)
     emit("plan", _format_plan(plan))
+
+    system_content = SYSTEM_PROMPT.format(workdir=workdir)
+    if map_block:
+        system_content += "\n\n" + map_block
 
     results: list[dict] = []
     steps_used_total = 0
@@ -500,8 +532,14 @@ def run_agent(
             break
 
         context = _build_subtask_context(task, plan, idx, results)
+        if map_info["focused"]:
+            # Big project: re-narrow the map to what matters for THIS sub-task.
+            sub = build_repo_map(subtask["goal"], workdir)
+            sub_block = _map_block(sub["text"])
+            if sub_block:
+                context += "\n\n" + sub_block
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(workdir=workdir)},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": context},
         ]
 

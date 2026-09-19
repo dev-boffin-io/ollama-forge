@@ -31,9 +31,12 @@ class FakeModel:
     def __init__(self, script: list[dict]) -> None:
         self._script = list(script)
         self.calls: list[tuple[bool, list[dict]]] = []
+        self.system_contents: list[str] = []
 
     def __call__(self, messages, model, *, tools=True):
         self.calls.append((tools, [m.get("role") for m in messages]))
+        if messages and messages[0].get("role") == "system":
+            self.system_contents.append(messages[0].get("content", ""))
         return self._script.pop(0)
 
 
@@ -114,6 +117,8 @@ class TestRunAgent:
         kinds = [k for k, _ in events]
         assert "plan" in kinds
         assert "text" in kinds
+        # the repo map is injected into the sub-task system prompt
+        assert any("Project layout" in s for s in fake.system_contents)
         # each sub-task got its own call series; synthesis used no tools
         tool_flags = [tools for tools, _ in fake.calls]
         assert tool_flags[0] is False    # planning
