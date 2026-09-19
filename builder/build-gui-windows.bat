@@ -119,10 +119,10 @@ if not exist "%WARN_FILE%" (
     goto :eof
 )
 for %%M in (%HIDDEN_MODULES%) do (
-    findstr /i /c:"missing module named %%M" "%WARN_FILE%" >nul
+    findstr /i /c:"missing module named %%M " /c:"missing module named '%%M'" "%WARN_FILE%" >nul
     if not errorlevel 1 (
         echo [ERROR] %~1 is missing required module: %%M
-        findstr /i /c:"missing module named %%M" "%WARN_FILE%"
+        findstr /i /c:"missing module named %%M " /c:"missing module named '%%M'" "%WARN_FILE%"
         exit /b 1
     )
 )

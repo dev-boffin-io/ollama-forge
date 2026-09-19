@@ -155,13 +155,13 @@ check_pyinstaller_warnings() {
     [[ -f "$warn_file" ]] || { warn "No PyInstaller warn file for $name ($warn_file)"; return 0; }
     local missing=() mod
     for mod in "${HIDDEN_NAMES[@]}"; do
-        if grep -qE "missing module named ${mod}([ .,]|$)" "$warn_file"; then
+        if grep -qE "missing module named '?${mod}'?( |$)" "$warn_file"; then
             missing+=("$mod")
         fi
     done
     if (( ${#missing[@]} )); then
         echo -e "${RED}[✗]${NC} $name is missing required modules: ${missing[*]}"
-        grep -E "missing module named (${missing[*]// /|})([ .,]|$)" "$warn_file" | head -20
+        grep -E "missing module named '?(${missing[*]// /|})'?( |$)" "$warn_file" | head -20
         die "$name is missing bundled modules — fix the build venv installs and rebuild"
     fi
     ok "All hidden imports bundled correctly ($name)"
