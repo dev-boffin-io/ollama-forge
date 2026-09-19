@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from database import DB_CLASS
 from ollama_client import OllamaClient
-from providers import PROVIDERS, PROVIDER_ORDER, get_client, env_key
+from providers import PROVIDERS, PROVIDER_ORDER, get_client, env_key, base_url_for
 from workers import (
     DirectChatWorker, CrewChatWorker, RAGBuildWorker,
     GroqChatWorker, SmartChatWorker,
@@ -89,6 +89,9 @@ class OllamaGUI(QMainWindow):
         self.ollama_host = (os.environ.get("OLLAMA_HOST")
                             or _DEFAULT_OLLAMA_HOST).rstrip("/")
         self._client     = OllamaClient(host=self.ollama_host)
+        # Per-provider base URL overrides (only OpenAI-compatible providers).
+        # Empty means "env var or catalog default". Persisted in settings.json.
+        self.base_urls: dict[str, str] = {}
 
         self.current_conv_id    = None
         self.thread             = None
@@ -442,6 +445,29 @@ class OllamaGUI(QMainWindow):
         self.key_row.setVisible(False)
         v.addWidget(self.key_row)
 
+        # ── Base URL row (visible for OpenAI-compatible providers) ──────
+        self.base_url_row = QWidget()
+        burl_layout = QHBoxLayout(self.base_url_row)
+        burl_layout.setContentsMargins(0, 4, 0, 4)
+        self.base_url_label = QLabel("🌐 Base URL:")
+        burl_layout.addWidget(self.base_url_label)
+        self.base_url_input = QLineEdit()
+        self.base_url_input.setPlaceholderText("Paste base URL, e.g. https://api.example.com/v1")
+        self.base_url_input.setMinimumHeight(56)
+        self.base_url_input.setToolTip(
+            "OpenAI-compatible endpoint URL — custom server, tunnel, or proxy.\n"
+            "Leaving this empty falls back to the OPENAI_BASE_URL env var."
+        )
+        burl_layout.addWidget(self.base_url_input, 1)
+        self.save_base_url_btn = QPushButton("✔ Apply")
+        self.save_base_url_btn.setMinimumHeight(56)
+        self.save_base_url_btn.setMinimumWidth(140)
+        self.save_base_url_btn.setToolTip("Save the base URL for this provider and reconnect")
+        self.save_base_url_btn.clicked.connect(self._apply_base_url)
+        burl_layout.addWidget(self.save_base_url_btn)
+        self.base_url_row.setVisible(False)
+        v.addWidget(self.base_url_row)
+
         # ── Ollama host row (visible only when the ollama provider is active) ─
         self.host_row = QWidget()
         host_layout = QHBoxLayout(self.host_row)
@@ -650,7 +676,8 @@ class OllamaGUI(QMainWindow):
 
         # ── Remote provider (API mode) ─────────────────────────────
         if self.api_mode:
-            client    = get_client(self.provider_id, self.api_key)
+            client    = get_client(self.provider_id, self.api_key,
+                                   base_url=self.base_urls.get(self.provider_id, ""))
             remote_models: list[dict] = []
             try:
                 remote_models = client.list_models()
@@ -1394,6 +1421,7 @@ class OllamaGUI(QMainWindow):
                 provider_id=self.provider_id,
                 api_key=self.api_key,
                 ollama_host=self.ollama_host,
+                base_url=self.base_urls.get(self.provider_id, ""),
                 api_model_override=self.model_box.currentText() if self.api_mode else "",
             )
             self.thread.token.connect(self._append_token)
@@ -1420,6 +1448,7 @@ class OllamaGUI(QMainWindow):
             provider_id      = self.provider_id,
             api_key          = self.api_key,
             ollama_host      = self.ollama_host,
+            base_url         = self.base_urls.get(self.provider_id, ""),
             available_models = self.models,
             rag_index        = rag_index,
             rag_query        = prompt,
@@ -1563,6 +1592,15 @@ class OllamaGUI(QMainWindow):
                 host = host.strip().rstrip("/")
                 if host.startswith(("http://", "https://")):
                     self.ollama_host = host
+            # Restore per-provider base URL overrides (OpenAI-compatible only)
+            raw_urls = data.get("base_urls")
+            if isinstance(raw_urls, dict):
+                self.base_urls = {
+                    str(k): str(v).strip().rstrip("/")
+                    for k, v in raw_urls.items()
+                    if isinstance(v, str)
+                    and v.strip().startswith(("http://", "https://"))
+                }
         except Exception:
             pass  # corrupt file — keep defaults, will be overwritten on next save
 
@@ -1603,6 +1641,7 @@ class OllamaGUI(QMainWindow):
             "selected_model": self.model_box.currentText(),
             "persistent_memory": self._persistent_memory,
             "ollama_host": self.ollama_host,
+            "base_urls": self.base_urls,
         }
         try:
             with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1616,6 +1655,34 @@ class OllamaGUI(QMainWindow):
         self.key_input.clear()
         self._save_settings()
         self._log("🗑 API key cleared.\n")
+
+    def _effective_base_url(self, pid: str) -> str:
+        """Resolved base URL for a provider (GUI override → env → catalog)."""
+        return base_url_for(pid, explicit=self.base_urls.get(pid, ""))
+
+    def _apply_base_url(self) -> None:
+        """Validate + persist the base URL for the current provider."""
+        pid = self.provider_id
+        url = self.base_url_input.text().strip().rstrip("/")
+        if not url:
+            self.base_urls.pop(pid, None)
+            self._save_settings()
+            self.base_url_input.setText(self._effective_base_url(pid))
+            self._log(f"🌐 {self._provider_label(pid)} base URL reset to default.\n")
+            self._load_models()
+            return
+        if not url.startswith(("http://", "https://")):
+            QMessageBox.warning(
+                self, "Base URL",
+                "Enter a full URL, e.g. https://api.example.com/v1",
+            )
+            return
+        changed = self.base_urls.get(pid) != url
+        self.base_urls[pid] = url
+        self._save_settings()
+        self._log(f"🌐 {self._provider_label(pid)} base URL set to {url}.\n")
+        if changed:
+            self._load_models()
 
     def _apply_ollama_host(self) -> None:
         """Validate and persist the Ollama host, then reconnect + reload."""
@@ -1653,10 +1720,15 @@ class OllamaGUI(QMainWindow):
         self.provider_sel.setCurrentIndex(idx if idx >= 0 else 0)
         self.provider_sel.blockSignals(False)
 
-        self.key_row.setVisible(self.api_mode and needs)
+        self.key_row.setVisible(self.api_mode and (needs or pid == "custom"))
         self.key_label.setText(f"🔑 {prof.get('label', pid)} API Key:")
         self.key_input.setPlaceholderText(f"Paste {prof.get('label', pid)} API key")
         self.key_input.setText(self.api_key)
+
+        self.base_url_row.setVisible(
+            self.api_mode and prof.get("kind") == "openai_compat")
+        self.base_url_input.setText(
+            self.base_urls.get(pid, self._effective_base_url(pid)))
 
         self.host_row.setVisible(not self.api_mode)
         self.host_input.setText(self.ollama_host)
@@ -1695,7 +1767,10 @@ class OllamaGUI(QMainWindow):
         QApplication.processEvents()
 
         try:
-            ok, err = get_client(self.provider_id, key).validate_key()
+            ok, err = get_client(
+                self.provider_id, key,
+                base_url=self.base_urls.get(self.provider_id, ""),
+            ).validate_key()
         except Exception as e:
             ok, err = False, str(e)
 
@@ -2094,7 +2169,8 @@ class OllamaGUI(QMainWindow):
                 try:
                     if self.api_mode:
                         raw = "".join(
-                            get_client(self.provider_id, self.api_key).chat_stream(
+                            get_client(self.provider_id, self.api_key,
+                                       base_url=self.base_urls.get(self.provider_id, "")).chat_stream(
                                 self.model_box.currentText(),
                                 [{"role": "user", "content": prompt}],
                             )

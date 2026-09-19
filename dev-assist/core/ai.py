@@ -80,8 +80,9 @@ def _get_api_key(cfg) -> str:
 
 
 def _get_api_url(cfg) -> str:
-    """Legacy helper — the active provider's base URL."""
-    return _provider_profile(cfg).get("base_url", "") or ""
+    """Legacy helper — the active provider's base URL (env-aware)."""
+    from core import providers as _providers
+    return _providers.provider_base_url(cfg) or ""
 
 
 def _get_api_model(cfg) -> str:

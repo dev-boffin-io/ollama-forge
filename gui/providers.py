@@ -24,6 +24,17 @@ import requests
 from ollama_client import OllamaClient
 
 
+# Environment-variable fallback for OpenAI-compatible endpoints (GUI's own
+# copy — dev-assist keeps its own; the two never share configuration files).
+_OPENAI_BASE_OVERRIDE_ENV = "DEV_ASSIST_OPENAI_BASE_URL"  # explicit CLI-style override
+_OPENAI_BASE_STANDARD_ENV = "OPENAI_BASE_URL"            # standard fallback
+_OPENAI_KEY_OVERRIDE_ENV  = "DEV_ASSIST_OPENAI_API_KEY"  # explicit CLI-style override
+# Providers that honour the OpenAI_* envs: the literal "openai" provider and
+# the arbitrary "custom" OpenAI-compatible endpoint. Others (groq, …) use
+# their own catalog base_url / env_var.
+_OPENAI_ENV_PROVIDERS = ("openai", "custom")
+
+
 # Catalog — display order.  MUST stay in sync with dev-assist/core/providers.py.
 PROVIDER_ORDER = [
     "ollama", "openai", "anthropic", "groq",
@@ -116,7 +127,7 @@ PROVIDERS = {
         "label": "Custom (OpenAI-compatible)",
         "kind": "openai_compat",
         "needs_key": False,
-        "env_var": "",
+        "env_var": "OPENAI_API_KEY",
         "base_url": "http://localhost:8000/v1",
         "default_model": "local-model",
         "models": [],
@@ -133,13 +144,38 @@ _ANTHROPIC_VISION = ("claude",)  # all Claude models are multimodal
 
 
 def env_key(provider_id: str, explicit: str = "") -> str:
-    """Provider key: explicit field wins, else that provider's env var."""
+    """Provider key: explicit field wins, else env (override, then standard
+    provider env var)."""
     if explicit.strip():
         return explicit.strip()
+    if provider_id in _OPENAI_ENV_PROVIDERS:
+        override = os.environ.get(_OPENAI_KEY_OVERRIDE_ENV, "").strip()
+        if override:
+            return override
     env_var = PROVIDERS.get(provider_id, {}).get("env_var", "")
     if env_var and os.environ.get(env_var):
         return os.environ[env_var]
     return ""
+
+
+def base_url_for(provider_id: str, explicit: str = "",
+                 profile: dict | None = None) -> str:
+    """Resolve a provider's base URL.
+
+    Priority: explicit (GUI field, persisted) → env override (`DEV_ASSIST_`
+    then standard `OPENAI_`, openai/custom only) → profile → catalog default.
+    """
+    if explicit.strip():
+        return explicit.strip().rstrip("/")
+    if provider_id in _OPENAI_ENV_PROVIDERS:
+        override = os.environ.get(_OPENAI_BASE_OVERRIDE_ENV, "").strip()
+        if override:
+            return override.rstrip("/")
+        standard = os.environ.get(_OPENAI_BASE_STANDARD_ENV, "").strip()
+        if standard:
+            return standard.rstrip("/")
+    prof = profile or PROVIDERS.get(provider_id, {})
+    return (prof.get("base_url") or "").rstrip("/")
 
 
 # ── Base contract for every client returned by get_client() ─────────────────
@@ -187,9 +223,12 @@ class _RemoteClient:
 class OpenAICompatClient(_RemoteClient):
     kind = "openai_compat"
 
-    def __init__(self, provider_id: str, profile: dict, api_key: str = ""):
+    def __init__(self, provider_id: str, profile: dict, api_key: str = "",
+                 base_url: str = ""):
         super().__init__(profile, api_key)
         self.name = provider_id
+        if base_url.strip():
+            self.base_url = base_url.strip().rstrip("/")
         self._azure = bool(profile.get("azure"))
 
     def _headers(self) -> dict:
@@ -493,7 +532,8 @@ class _OllamaAdapter:
         yield from self._client.chat_stream(model, messages, temperature=temperature)
 
 
-def get_client(provider_id: str, api_key: str = "", host: str = "") -> object:
+def get_client(provider_id: str, api_key: str = "", host: str = "",
+               base_url: str = "") -> object:
     """Build the client for a provider id, resolving the key from env too."""
     profile = PROVIDERS.get(provider_id, PROVIDERS["custom"])
     key = env_key(provider_id, api_key)
@@ -501,4 +541,5 @@ def get_client(provider_id: str, api_key: str = "", host: str = "") -> object:
         return _OllamaAdapter(provider_id, profile, key, host=host)
     if profile.get("kind") == "anthropic":
         return AnthropicClient(provider_id, profile, key)
-    return OpenAICompatClient(provider_id, profile, key)
+    url = base_url_for(provider_id, explicit=base_url, profile=profile)
+    return OpenAICompatClient(provider_id, profile, key, base_url=url)
