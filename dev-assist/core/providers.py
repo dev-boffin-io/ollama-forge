@@ -52,6 +52,17 @@ STREAM_TIMEOUT = 600      # seconds for a streamed completion
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 8192
 
+# Environment-variable support for OpenAI-compatible endpoints (apps' own env:
+# nothing shared with the GUI — the GUI keeps its own copy of this catalog).
+_OPENAI_BASE_OVERRIDE_ENV = "DEV_ASSIST_OPENAI_BASE_URL"  # CLI-specific, highest
+_OPENAI_BASE_STANDARD_ENV = "OPENAI_BASE_URL"            # standard fallback
+_OPENAI_KEY_OVERRIDE_ENV  = "DEV_ASSIST_OPENAI_API_KEY"  # CLI-specific, highest
+_OPENAI_KEY_STANDARD_ENV  = "OPENAI_API_KEY"             # standard fallback
+# Providers these apply to: the literal "openai" one plus the arbitrary
+# "custom" OpenAI-compatible endpoint. Other providers (groq, openrouter, …)
+# keep their own catalog base_url / env_var.
+_OPENAI_ENV_PROVIDERS = ("openai", "custom")
+
 # Catalog — display order.
 PROVIDER_ORDER = [
     "ollama", "openai", "anthropic", "groq",
@@ -146,7 +157,7 @@ PROVIDERS: dict[str, dict] = {
         "label": "Custom (OpenAI-compatible)",
         "kind": "openai_compat",
         "needs_key": False,
-        "env_var": "",
+        "env_var": "OPENAI_API_KEY",
         "base_url": "http://localhost:8000/v1",
         "default_model": "local-model",
         "models": [],
@@ -214,13 +225,18 @@ def provider_key(cfg, provider: str | None = None, explicit: str = "") -> str:
     """
     Resolve the API key for a provider.
 
-    Priority: explicit → env var for that provider → stored key → legacy
-    DEV_ASSIST_API_KEY fallback → legacy groq api_engine.api_key.
+    Priority: explicit → CLI override env for openai/custom →
+    provider env var → stored key → legacy DEV_ASSIST_API_KEY fallback →
+    legacy groq api_engine.api_key.
     """
     if explicit:
         return explicit
     pid = provider or active_provider(cfg)
     prof = provider_profile(cfg, pid)
+    if pid in _OPENAI_ENV_PROVIDERS:
+        override = os.environ.get(_OPENAI_KEY_OVERRIDE_ENV, "").strip()
+        if override:
+            return override
     env_var = prof.get("env_var", "")
     if env_var and os.environ.get(env_var):
         return os.environ[env_var]
@@ -237,6 +253,30 @@ def provider_key(cfg, provider: str | None = None, explicit: str = "") -> str:
     return ""
 
 
+def _openai_env_base_url(pid: str, profile: dict) -> str:
+    """Base URL from env for OpenAI-compatible endpoints (openai/custom only).
+
+    CLI-specific override beats the standard OPENAI_BASE_URL. Empty when the
+    provider isn't env configurable, so settings/catalog values win there."""
+    if pid not in _OPENAI_ENV_PROVIDERS:
+        return ""
+    override = os.environ.get(_OPENAI_BASE_OVERRIDE_ENV, "").strip()
+    if override:
+        return override
+    return os.environ.get(_OPENAI_BASE_STANDARD_ENV, "").strip()
+
+
+def provider_base_url(cfg, provider: str | None = None) -> str:
+    """
+    Resolve the base URL for a provider (env override → profile/settings →
+    catalog default). Mirrors provider_key() so env can preempt settings.
+    """
+    pid = provider or active_provider(cfg)
+    prof = provider_profile(cfg, pid)
+    env_base = _openai_env_base_url(pid, prof)
+    return (env_base or prof.get("base_url", "") or "").rstrip("/")
+
+
 # ── Base adapter ─────────────────────────────────────────────────────────────
 
 class BaseProvider(ABC):
@@ -250,10 +290,17 @@ class BaseProvider(ABC):
         self.profile = merged_defaults
         self.label = self.profile.get("label", provider_id)
         self.default_model = self.profile.get("default_model", "") or ""
-        self.base_url = (self.profile.get("base_url", "") or "").rstrip("/")
+        self.base_url = (
+            _openai_env_base_url(provider_id, self.profile)
+            or (self.profile.get("base_url", "") or "")
+        ).rstrip("/")
         self.api_key = api_key or self._env_key() or self.profile.get("api_key", "") or ""
 
     def _env_key(self) -> str:
+        if self.provider_id in _OPENAI_ENV_PROVIDERS:
+            override = os.environ.get(_OPENAI_KEY_OVERRIDE_ENV, "").strip()
+            if override:
+                return override
         env_var = self.profile.get("env_var", "")
         if env_var and os.environ.get(env_var):
             return os.environ[env_var]

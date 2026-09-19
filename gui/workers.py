@@ -90,13 +90,15 @@ class CrewChatWorker(_StopMixin, QThread):
                  provider_id: str = "ollama",
                  api_key: str = "",
                  ollama_host: str = "",
+                 base_url: str = "",
                  api_model_override: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.prompt          = prompt
         self.crew_config     = crew_config
         self.history         = history
-        self._client         = get_client(provider_id, api_key, host=ollama_host)
+        self._client         = get_client(provider_id, api_key, host=ollama_host,
+                                          base_url=base_url)
         self._provider_kind  = self._client.kind
         self._model_override = api_model_override
 
@@ -248,6 +250,7 @@ class SmartChatWorker(_StopMixin, QThread):
                  provider_id: str = "ollama",
                  api_key: str = "",
                  ollama_host: str = "",
+                 base_url: str = "",
                  available_models: list[dict] = None,
                  rag_index=None,
                  rag_query: str = ""):
@@ -262,7 +265,8 @@ class SmartChatWorker(_StopMixin, QThread):
         self.available_models = available_models or []
         self.rag_index        = rag_index   # RAGIndex or None
         self.rag_query        = rag_query   # query string for RAG search
-        self._client          = get_client(provider_id, api_key, host=ollama_host)
+        self._client          = get_client(provider_id, api_key, host=ollama_host,
+                                           base_url=base_url)
         self._provider_kind   = self._client.kind
 
     def _is_vision_model(self, name: str) -> bool:
