@@ -4,6 +4,7 @@ Ollama API client — streaming, vision, model listing.
 No LangChain. No heavy deps.
 """
 import json
+import os
 import time
 import requests
 
@@ -11,7 +12,10 @@ import requests
 class OllamaClient:
     BASE = "http://localhost:11434"
 
-    def __init__(self, timeout: int = 300, retries: int = 3):
+    def __init__(self, host: str | None = None,
+                 timeout: int = 300, retries: int = 3):
+        # host is the Ollama HTTP base URL — local, SSH port-forward, or tunnel.
+        self.host = (host or os.environ.get("OLLAMA_HOST") or self.BASE).rstrip("/")
         self.timeout = timeout
         self.retries = retries
 
@@ -34,7 +38,7 @@ class OllamaClient:
         """
         try:
             r = requests.post(
-                f"{self.BASE}/api/show",
+                f"{self.host}/api/show",
                 json={"name": name},
                 timeout=8,
             )
@@ -76,7 +80,7 @@ class OllamaClient:
         Return all models with capabilities resolved via /api/show.
         Each dict: name, size, modified_at, vision (bool), embed (bool).
         """
-        r = requests.get(f"{self.BASE}/api/tags", timeout=5)
+        r = requests.get(f"{self.host}/api/tags", timeout=5)
         r.raise_for_status()
         models = []
         for m in r.json().get("models", []):
@@ -101,12 +105,12 @@ class OllamaClient:
 
     def is_running(self) -> bool:
         try:
-            return requests.get(f"{self.BASE}/api/tags", timeout=3).status_code == 200
+            return requests.get(f"{self.host}/api/tags", timeout=3).status_code == 200
         except Exception:
             return False
 
     def show_model(self, name: str) -> dict:
-        r = requests.post(f"{self.BASE}/api/show", json={"name": name}, timeout=10)
+        r = requests.post(f"{self.host}/api/show", json={"name": name}, timeout=10)
         if r.status_code == 200:
             return r.json()
         return {}
@@ -126,7 +130,7 @@ class OllamaClient:
         for attempt in range(self.retries):
             try:
                 with requests.post(
-                    f"{self.BASE}/api/chat",
+                    f"{self.host}/api/chat",
                     json=payload, stream=True, timeout=self.timeout
                 ) as resp:
                     resp.raise_for_status()

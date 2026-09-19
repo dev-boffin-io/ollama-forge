@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
 
 from .helpers import (
     autodetect_ollama, fmt_size, load_ollama_bin,
-    parse_signin_username, read_ollama_username, safe_remove, save_ollama_bin,
+    load_ollama_host, parse_signin_username, read_ollama_username,
+    safe_remove, save_ollama_bin,
 )
 from .workers import ManageWorker, ServerCheckWorker, SubprocWorker
 
@@ -54,6 +55,9 @@ class OllamaManager(QMainWindow):
 
         saved = load_ollama_bin()
         self._ollama_bin = saved if saved else (autodetect_ollama() or "ollama")
+
+        # Ollama HTTP base URL — remote host/tunnel from the GUI's own settings.
+        self._host = load_ollama_host()
 
         self._build_ui()
 
@@ -661,7 +665,7 @@ class OllamaManager(QMainWindow):
         existing = getattr(self, "_chk_w", None)
         if existing is not None and existing.isRunning():
             return
-        w = ServerCheckWorker(self)
+        w = ServerCheckWorker(self._host, self)
         w.result.connect(lambda ok: self._sig_server.emit(ok))
         w.finished.connect(w.deleteLater)
         w.start()
@@ -683,7 +687,7 @@ class OllamaManager(QMainWindow):
             try:
                 ok = (
                     requests.get(
-                        "http://localhost:11434/api/tags", timeout=2
+                        f"{self._host}/api/tags", timeout=2
                     ).status_code == 200
                 )
             except Exception:
@@ -722,7 +726,7 @@ class OllamaManager(QMainWindow):
                 for _ in range(12):
                     time.sleep(0.4)
                     try:
-                        requests.get("http://localhost:11434/api/tags", timeout=1)
+                        requests.get(f"{self._host}/api/tags", timeout=1)
                     except Exception:
                         break
             self._log.emit("🛑 Ollama stopped.")
@@ -747,7 +751,7 @@ class OllamaManager(QMainWindow):
                 try:
                     if (
                         requests.get(
-                            "http://localhost:11434/api/tags", timeout=2
+                            f"{self._host}/api/tags", timeout=2
                         ).status_code == 200
                     ):
                         self._log.emit("🟢 Server ready!")
@@ -767,7 +771,7 @@ class OllamaManager(QMainWindow):
     def _load_models(self) -> None:
         try:
             models = (
-                requests.get("http://localhost:11434/api/tags", timeout=5)
+                requests.get(f"{self._host}/api/tags", timeout=5)
                 .json()
                 .get("models", [])
             )
@@ -792,7 +796,7 @@ class OllamaManager(QMainWindow):
     def _show_details(self, name: str) -> None:
         try:
             r = requests.post(
-                "http://localhost:11434/api/show",
+                f"{self._host}/api/show",
                 json={"name": name},
                 timeout=8,
             )

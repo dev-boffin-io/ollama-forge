@@ -474,10 +474,11 @@ class _OllamaAdapter:
         "llava", "vision", "bakllava", "moondream", "phi3-v", "minicpm-v",
     )
 
-    def __init__(self, provider_id: str, profile: dict, api_key: str = ""):
+    def __init__(self, provider_id: str, profile: dict, api_key: str = "",
+                 host: str = ""):
         self.name = provider_id
         self.label = profile["label"]
-        self._client = OllamaClient()
+        self._client = OllamaClient(host=host)
 
     def list_models(self) -> list[dict]:
         return self._client.list_models()
@@ -492,12 +493,12 @@ class _OllamaAdapter:
         yield from self._client.chat_stream(model, messages, temperature=temperature)
 
 
-def get_client(provider_id: str, api_key: str = "") -> object:
+def get_client(provider_id: str, api_key: str = "", host: str = "") -> object:
     """Build the client for a provider id, resolving the key from env too."""
     profile = PROVIDERS.get(provider_id, PROVIDERS["custom"])
     key = env_key(provider_id, api_key)
     if provider_id == "ollama":
-        return _OllamaAdapter(provider_id, profile, key)
+        return _OllamaAdapter(provider_id, profile, key, host=host)
     if profile.get("kind") == "anthropic":
         return AnthropicClient(provider_id, profile, key)
     return OpenAICompatClient(provider_id, profile, key)

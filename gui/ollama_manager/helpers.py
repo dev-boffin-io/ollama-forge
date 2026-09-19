@@ -22,8 +22,32 @@ OLLAMA_PATHS = [
     "/etc/systemd/system/ollama.service.d",
 ]
 
+# Default Ollama HTTP base URL (shared with the main GUI window).
+OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+
 
 # ── Config I/O ───────────────────────────────────────────────────────────────
+
+def load_ollama_host() -> str:
+    """
+    Ollama HTTP base URL for status/model checks.
+
+    Reads the GUI's own settings.json ("ollama_host", set by the main window),
+    falling back to the OLLAMA_HOST env var, then the default local URL.
+    """
+    host = ""
+    try:
+        with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            host = json.load(f).get("ollama_host", "") or ""
+    except Exception:
+        pass
+    if not host:
+        host = os.environ.get("OLLAMA_HOST", "") or ""
+    host = str(host).strip().rstrip("/")
+    if host.startswith(("http://", "https://")):
+        return host
+    return OLLAMA_DEFAULT_HOST
+
 
 def load_ollama_bin() -> str:
     try:

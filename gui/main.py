@@ -54,6 +54,9 @@ _EMBED_FALLBACKS = [
     "mxbai-embed-large:latest",
 ]
 
+# Default Ollama HTTP base URL — overridable via the host row (tunnel/forward).
+_DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
 
 def _truncate_text_blocks(
     blocks: list[tuple[str, str]], max_chars: int
@@ -81,7 +84,11 @@ class OllamaGUI(QMainWindow):
 
         self.db          = DB_CLASS()
         self.db_mutex    = QMutex()
-        self._client     = OllamaClient()
+        # Ollama HTTP base URL — local, SSH port-forward, or tunnel.
+        # Persisted in settings.json; OLLAMA_HOST env is a fallback default.
+        self.ollama_host = (os.environ.get("OLLAMA_HOST")
+                            or _DEFAULT_OLLAMA_HOST).rstrip("/")
+        self._client     = OllamaClient(host=self.ollama_host)
 
         self.current_conv_id    = None
         self.thread             = None
@@ -111,6 +118,7 @@ class OllamaGUI(QMainWindow):
         self._saved_model  = ""   # restored by _load_settings below
 
         self._load_settings()   # overwrite defaults with persisted values
+        self._client = OllamaClient(host=self.ollama_host)  # re-point at saved host
 
         # ── Persistent Memory ────────────────────────────────────────
         self._persistent_memory = False   # toggle: persistent vs session-only
@@ -433,6 +441,29 @@ class OllamaGUI(QMainWindow):
         key_layout.addWidget(self.clear_key_btn)
         self.key_row.setVisible(False)
         v.addWidget(self.key_row)
+
+        # ── Ollama host row (visible only when the ollama provider is active) ─
+        self.host_row = QWidget()
+        host_layout = QHBoxLayout(self.host_row)
+        host_layout.setContentsMargins(0, 4, 0, 4)
+        self.host_label = QLabel("🔗 Ollama Host:")
+        host_layout.addWidget(self.host_label)
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText(_DEFAULT_OLLAMA_HOST)
+        self.host_input.setText(self.ollama_host)
+        self.host_input.setMinimumHeight(56)
+        self.host_input.setToolTip(
+            "Ollama server URL — local, SSH port-forward, or tunnel"
+        )
+        host_layout.addWidget(self.host_input, 1)
+        self.save_host_btn = QPushButton("✔ Apply")
+        self.save_host_btn.setMinimumHeight(56)
+        self.save_host_btn.setMinimumWidth(140)
+        self.save_host_btn.setToolTip("Save the Ollama host and reconnect")
+        self.save_host_btn.clicked.connect(self._apply_ollama_host)
+        host_layout.addWidget(self.save_host_btn)
+        self.host_row.setVisible(False)
+        v.addWidget(self.host_row)
 
         # Chat display — QTextBrowser renders HTML (markdown, code blocks, tables)
         self.chat = QTextBrowser()
@@ -823,7 +854,8 @@ class OllamaGUI(QMainWindow):
         """Lazy-load RAGIndex."""
         if self._rag is None:
             from rag_engine import RAGIndex
-            self._rag = RAGIndex(embed_model=self.embed_box.currentText())
+            self._rag = RAGIndex(embed_model=self.embed_box.currentText(),
+                                 host=self.ollama_host)
         return self._rag
 
     def _rag_has_data(self) -> bool:
@@ -867,7 +899,8 @@ class OllamaGUI(QMainWindow):
         self.rag_progress.setValue(0)
         self._log(f"🔄 Indexing {len(paths)} file(s)…")
 
-        self._rag_worker = RAGBuildWorker(paths, self.embed_box.currentText())
+        self._rag_worker = RAGBuildWorker(paths, self.embed_box.currentText(),
+                                      host=self.ollama_host)
         self._rag_worker.progress.connect(
             lambda d, t: (self.rag_progress.setMaximum(t),
                           self.rag_progress.setValue(d))
@@ -1360,6 +1393,7 @@ class OllamaGUI(QMainWindow):
                 prompt, crew_cfg, history,
                 provider_id=self.provider_id,
                 api_key=self.api_key,
+                ollama_host=self.ollama_host,
                 api_model_override=self.model_box.currentText() if self.api_mode else "",
             )
             self.thread.token.connect(self._append_token)
@@ -1385,6 +1419,7 @@ class OllamaGUI(QMainWindow):
             text_injection   = text_injection,
             provider_id      = self.provider_id,
             api_key          = self.api_key,
+            ollama_host      = self.ollama_host,
             available_models = self.models,
             rag_index        = rag_index,
             rag_query        = prompt,
@@ -1522,6 +1557,12 @@ class OllamaGUI(QMainWindow):
             # Restore persistent memory toggle
             if data.get("persistent_memory", False):
                 self._persistent_memory = True
+            # Restore Ollama host if present and valid
+            host = data.get("ollama_host")
+            if isinstance(host, str) and host.strip():
+                host = host.strip().rstrip("/")
+                if host.startswith(("http://", "https://")):
+                    self.ollama_host = host
         except Exception:
             pass  # corrupt file — keep defaults, will be overwritten on next save
 
@@ -1561,6 +1602,7 @@ class OllamaGUI(QMainWindow):
             "api_key": self.api_key,
             "selected_model": self.model_box.currentText(),
             "persistent_memory": self._persistent_memory,
+            "ollama_host": self.ollama_host,
         }
         try:
             with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1574,6 +1616,26 @@ class OllamaGUI(QMainWindow):
         self.key_input.clear()
         self._save_settings()
         self._log("🗑 API key cleared.\n")
+
+    def _apply_ollama_host(self) -> None:
+        """Validate and persist the Ollama host, then reconnect + reload."""
+        host = (self.host_input.text().strip() or _DEFAULT_OLLAMA_HOST).rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            QMessageBox.warning(
+                self, "Ollama Host",
+                "Enter a full URL, e.g. http://localhost:11434 or "
+                "https://abc.trycloudflare.com",
+            )
+            return
+        changed = host != self.ollama_host
+        self.ollama_host = host
+        self._client = OllamaClient(host=host)
+        self._save_settings()
+        self._log(f"🔗 Ollama host set to {host}.\n")
+        if changed:
+            self._rag = None   # drop cached index — it embeds against the old host
+            self._load_models()
+            self._check_server_state()
 
     def _provider_label(self, pid: str | None = None) -> str:
         return PROVIDERS.get(pid or self.provider_id, {}).get(
@@ -1595,6 +1657,9 @@ class OllamaGUI(QMainWindow):
         self.key_label.setText(f"🔑 {prof.get('label', pid)} API Key:")
         self.key_input.setPlaceholderText(f"Paste {prof.get('label', pid)} API key")
         self.key_input.setText(self.api_key)
+
+        self.host_row.setVisible(not self.api_mode)
+        self.host_input.setText(self.ollama_host)
 
         self.server_btn.setVisible(not self.api_mode)
         self.mgr_btn.setVisible(not self.api_mode)
@@ -2003,7 +2068,7 @@ class OllamaGUI(QMainWindow):
 
         # ── Strategy 2: LLM extraction (background) ──────────────────
         def _run():
-            import json as _json, requests as _req
+            import json as _json
 
             # Pass 1: personal facts from USER message only
             prompt_user = (
@@ -2035,16 +2100,12 @@ class OllamaGUI(QMainWindow):
                             )
                         )
                     else:
-                        r = _req.post(
-                            "http://localhost:11434/api/chat",
-                            json={
-                                "model": self.model_box.currentText(),
-                                "messages": [{"role": "user", "content": prompt}],
-                                "stream": False,
-                            },
-                            timeout=25,
+                        raw = "".join(
+                            self._client.chat_stream(
+                                self.model_box.currentText(),
+                                [{"role": "user", "content": prompt}],
+                            )
                         )
-                        raw = r.json().get("message", {}).get("content", "")
                     raw = raw.strip()
                     s, e2 = raw.find("["), raw.rfind("]")
                     if s != -1 and e2 != -1:

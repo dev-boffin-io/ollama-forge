@@ -47,12 +47,12 @@ class DirectChatWorker(_StopMixin, QThread):
     error    = pyqtSignal(str)
     finished = pyqtSignal(str, float, int)
 
-    def __init__(self, model: str, messages: list[dict]):
+    def __init__(self, model: str, messages: list[dict], host: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.model    = model
         self.messages = messages
-        self._client  = OllamaClient()
+        self._client  = OllamaClient(host=host)
 
     def run(self):
         t0       = time.time()
@@ -89,13 +89,14 @@ class CrewChatWorker(_StopMixin, QThread):
                  history: list[dict],
                  provider_id: str = "ollama",
                  api_key: str = "",
+                 ollama_host: str = "",
                  api_model_override: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.prompt          = prompt
         self.crew_config     = crew_config
         self.history         = history
-        self._client         = get_client(provider_id, api_key)
+        self._client         = get_client(provider_id, api_key, host=ollama_host)
         self._provider_kind  = self._client.kind
         self._model_override = api_model_override
 
@@ -170,16 +171,17 @@ class RAGBuildWorker(_StopMixin, QThread):
     finished = pyqtSignal()
     error    = pyqtSignal(str)
 
-    def __init__(self, paths: list[str], embed_model: str):
+    def __init__(self, paths: list[str], embed_model: str, host: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.paths       = paths
         self.embed_model = embed_model
+        self.host        = host
 
     def run(self):
         from rag_engine import RAGIndex
         try:
-            idx = RAGIndex(embed_model=self.embed_model)
+            idx = RAGIndex(embed_model=self.embed_model, host=self.host)
             idx.add_documents(
                 self.paths,
                 progress_cb=lambda d, t: self.progress.emit(d, t),
@@ -245,6 +247,7 @@ class SmartChatWorker(_StopMixin, QThread):
                  text_injection: str = "",
                  provider_id: str = "ollama",
                  api_key: str = "",
+                 ollama_host: str = "",
                  available_models: list[dict] = None,
                  rag_index=None,
                  rag_query: str = ""):
@@ -259,7 +262,7 @@ class SmartChatWorker(_StopMixin, QThread):
         self.available_models = available_models or []
         self.rag_index        = rag_index   # RAGIndex or None
         self.rag_query        = rag_query   # query string for RAG search
-        self._client          = get_client(provider_id, api_key)
+        self._client          = get_client(provider_id, api_key, host=ollama_host)
         self._provider_kind   = self._client.kind
 
     def _is_vision_model(self, name: str) -> bool:
@@ -387,14 +390,15 @@ class CodeRunWorker(_StopMixin, QThread):
     status     = pyqtSignal(str)
 
     def __init__(self, response_text: str, *, model: str,
-                 provider_id: str = "ollama", api_key: str = ""):
+                 provider_id: str = "ollama", api_key: str = "",
+                 ollama_host: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.response_text = response_text
         self.model         = model
         self.provider_id   = provider_id
         self.api_key       = api_key
-        self._client       = get_client(provider_id, api_key)
+        self._client       = get_client(provider_id, api_key, host=ollama_host)
         self._provider_kind = self._client.kind
 
     def _get_debug_fix(self, lang: str, code: str, error_output: str) -> str:
