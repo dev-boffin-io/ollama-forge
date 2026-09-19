@@ -83,8 +83,37 @@ if _PYDANTIC:
             "*secret*", "*password*", "*credential*",
         ]
 
+    @staticmethod
+    def _provider_defaults() -> dict[str, "ProviderProfile"]:
+        from core import providers as _providers
+        return {
+            pid: ProviderProfile.model_validate(p)
+            for pid, p in _providers.provider_defaults_raw().items()
+        }
+
+    class ProviderProfile(BaseModel):
+        label: str = ""
+        kind: str = "openai_compat"
+        needs_key: bool = False
+        env_var: str = ""
+        base_url: str = ""
+        api_version: str = ""
+        azure: bool = False
+        default_model: str = ""
+        models: list[str] = []
+        api_key: str = Field(default="", description="Optional; env vars preferred. Never required.")
+
+        @field_validator("base_url")
+        @classmethod
+        def validate_url(cls, v: str) -> str:
+            if v and not v.startswith(("http://", "https://")):
+                raise ValueError(f"base_url must start with http:// or https://, got: {v}")
+            return v
+
     class AppConfig(BaseModel):
         ai_engine: str = Field(default="ollama", pattern="^(ollama|api)$")
+        active_provider: str = Field(default="ollama", description="Provider id from core.providers.PROVIDERS")
+        providers: dict[str, "ProviderProfile"] = Field(default_factory=_provider_defaults)
         ollama_model: str = "qwen2.5-coder:7b"
         ollama_available_models: list[str] = [
             "qwen2.5-coder:7b",
@@ -104,10 +133,23 @@ if _PYDANTIC:
                 return env_key
             return self.api_engine.api_key
 
+        def get_provider(self, provider: str | None = None) -> "ProviderProfile":
+            """Resolve a provider profile (defaults to the active one)."""
+            from core import providers as _providers
+            pid = provider or _providers.active_provider(self)
+            prof = self.providers.get(pid)
+            if prof is not None:
+                return prof
+            return ProviderProfile.model_validate(_providers.PROVIDERS[pid]) if pid in _providers.PROVIDERS else ProviderProfile()
+
         def get_current_model(self) -> str:
-            if self.ai_engine == "ollama":
-                return f"ollama/{self.ollama_model}"
-            return f"api/{self.api_engine.api_model}"
+            from core import providers as _providers
+            pid = _providers.active_provider(self)
+            prof = self.get_provider(pid)
+            model = prof.default_model
+            if pid == "ollama" and not model:
+                model = self.ollama_model
+            return f"{pid}/{model}"
 
 
 # ── Load / Save ──────────────────────────────────────────────────────────────
@@ -127,6 +169,11 @@ def load_config() -> "AppConfig | dict[str, Any]":
 
     # Strip comment keys
     raw = {k: v for k, v in raw.items() if not k.startswith("_")}
+
+    # Normalize: legacy single-engine configs map onto the provider catalog
+    # (ai_engine=ollama -> ollama, ai_engine=api -> groq) and provider
+    # defaults are filled so older settings.json files get provider rows.
+    raw = _normalize_providers(raw)
 
     if not _PYDANTIC:
         return raw  # type: ignore[return-value]
@@ -163,15 +210,41 @@ def save_config(data: "AppConfig | dict[str, Any]") -> None:
     else:
         raw = dict(data)  # type: ignore[arg-type]
 
+    # Normalize since dict-mode saves go straight back to disk.
+    raw = _normalize_providers(raw)
+
     # Safety: never write plaintext API key if env var is set
     if os.environ.get("DEV_ASSIST_API_KEY"):
         if "api_engine" in raw and isinstance(raw["api_engine"], dict):
             raw["api_engine"]["api_key"] = ""
+    for prof in (raw.get("providers") or {}).values():
+        if isinstance(prof, dict):
+            prof["api_key"] = ""
 
-    raw["_comment"] = "dev-assist config — set DEV_ASSIST_API_KEY env var instead of api_key here"
+    raw["_comment"] = "dev-assist config — set API keys via env vars (e.g. GROQ_API_KEY) instead of here"
 
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(raw, f, indent=2, ensure_ascii=False)
+
+
+def _normalize_providers(raw: dict[str, Any]) -> dict[str, Any]:
+    """Fill/repair the provider fields on a dict config, mapping legacy
+    single-engine settings (ai_engine=ollama/api) onto the catalog."""
+    from core import providers as _providers
+
+    raw.setdefault("providers", _providers.provider_defaults_raw())
+    if not isinstance(raw["providers"], dict):
+        raw["providers"] = _providers.provider_defaults_raw()
+    for pid, defaults in _providers.provider_defaults_raw().items():
+        prof = raw["providers"].get(pid)
+        if not isinstance(prof, dict):
+            raw["providers"][pid] = dict(defaults)
+
+    active = raw.get("active_provider", "")
+    if active not in _providers.PROVIDERS:
+        engine = raw.get("ai_engine", "ollama")
+        raw["active_provider"] = "ollama" if engine == "ollama" else "groq"
+    return raw
 
 
 def get_config_value(key: str, default: Any = None) -> Any:

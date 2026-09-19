@@ -32,9 +32,16 @@ class FakeModel:
         self._script = list(script)
         self.calls: list[tuple[bool, list[dict]]] = []
         self.system_contents: list[str] = []
+        self.kind = "ollama"
+        self.provider_id = "ollama"
+        self.label = "Fake"
+        self.default_model = "fake"
 
-    def __call__(self, messages, model, *, tools=True):
-        self.calls.append((tools, [m.get("role") for m in messages]))
+    def resolve_model(self, model=None):
+        return model or self.default_model
+
+    def chat(self, messages, *, model=None, tools=None):
+        self.calls.append((tools is not None, [m.get("role") for m in messages]))
         if messages and messages[0].get("role") == "system":
             self.system_contents.append(messages[0].get("content", ""))
         return self._script.pop(0)
@@ -47,8 +54,8 @@ def make_project(tmp_path):
 
 
 def _patch_agent(monkeypatch, fake):
-    from core import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "_call_ollama", fake)
+    from core import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "get_provider", lambda cfg=None, provider=None, api_key="": fake)
 
 
 class TestPlanning:
@@ -75,14 +82,16 @@ class TestPlanning:
         assert len(plan) == 1
         assert plan[0]["goal"] == ""
 
-    def test_plan_subtasks_falls_back_on_error(self, monkeypatch):
-        from core.agent import _plan_subtasks, _parse_plan
+    def test_plan_subtasks_falls_back_on_error(self):
+        from core.agent import _plan_subtasks
 
-        def boom(*a, **k):
-            raise RuntimeError("model exploded")
+        class Boom:
+            kind = "ollama"
 
-        monkeypatch.setattr("core.agent._call_ollama", boom)
-        plan = _plan_subtasks("do a thing", {}, "ollama", "m")
+            def chat(self, messages, *, model=None, tools=None):
+                raise RuntimeError("model exploded")
+
+        plan = _plan_subtasks("do a thing", Boom())
         assert len(plan) == 1
         assert plan[0]["title"] == "Complete the task"
 

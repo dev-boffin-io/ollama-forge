@@ -1,10 +1,13 @@
 """
-AI Engine — Ollama (local) with optional API fallback.
+AI Engine — provider-agnostic front-end over core.providers.
 
 Improvements:
 - Uses core.config for validated settings
-- API key loaded from env var (DEV_ASSIST_API_KEY)
-- Session-aware multi-turn for Ollama chat
+- Any provider from core.providers.PROVIDERS (Ollama, OpenAI, Anthropic,
+  Groq, OpenRouter, Mistral, Azure, custom OpenAI-compatible)
+- API keys are never required up front — resolved lazily from env vars
+  at request time (GROQ_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)
+- Session-aware multi-turn chat for the CLI
 - Captures output for session history integration
 """
 
@@ -12,6 +15,14 @@ from __future__ import annotations
 
 import os
 from typing import AsyncGenerator
+
+from core.providers import (
+    ProviderError,
+    active_provider as _active_provider,
+    make_provider,
+    provider_key as _provider_key,
+    provider_profile as _provider_profile,
+)
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────
@@ -45,49 +56,65 @@ def get_current_model() -> str:
     cfg = _load_config()
     if hasattr(cfg, "get_current_model"):
         return cfg.get_current_model()
-    engine = cfg.get("ai_engine", "ollama")
-    if engine == "ollama":
-        return f"ollama/{cfg.get('ollama_model', 'qwen2.5-coder:7b')}"
-    return f"api/{cfg.get('api_engine', {}).get('api_model', 'llama3-70b-8192')}"
+    if isinstance(cfg, dict):
+        from core import providers as _providers
+        pid = _providers.active_provider(cfg)
+        prof = _providers.provider_profile(cfg, pid)
+        return f"{pid}/{prof.get('default_model', '')}"
+    return "ollama/qwen2.5-coder:7b"
 
 
 def _get_engine(cfg) -> str:
-    if hasattr(cfg, "ai_engine"):
-        return cfg.ai_engine
-    return cfg.get("ai_engine", "ollama")
+    """The active provider id (legacy 'ollama'/'api' map onto the catalog)."""
+    return _active_provider(cfg)
 
 
 def _get_ollama_model(cfg) -> str:
-    if hasattr(cfg, "ollama_model"):
-        return cfg.ollama_model
-    return cfg.get("ollama_model", "qwen2.5-coder:7b")
+    """Legacy helper — ollama profile's default model."""
+    return _provider_profile(cfg, "ollama").get("default_model", "qwen2.5-coder:7b")
 
 
 def _get_api_key(cfg) -> str:
-    # Env var takes priority
-    env_key = os.environ.get("DEV_ASSIST_API_KEY", "")
-    if env_key:
-        return env_key
-    if hasattr(cfg, "get_active_api_key"):
-        return cfg.get_active_api_key()
-    return cfg.get("api_engine", {}).get("api_key", "")
+    """Legacy helper — the active provider's resolved key."""
+    return _provider_key(cfg)
 
 
 def _get_api_url(cfg) -> str:
-    if hasattr(cfg, "api_engine"):
-        return cfg.api_engine.api_url
-    return cfg.get("api_engine", {}).get(
-        "api_url", "https://api.groq.com/openai/v1/chat/completions"
-    )
+    """Legacy helper — the active provider's base URL."""
+    return _provider_profile(cfg).get("base_url", "") or ""
 
 
 def _get_api_model(cfg) -> str:
-    if hasattr(cfg, "api_engine"):
-        return cfg.api_engine.api_model
-    return cfg.get("api_engine", {}).get("api_model", "llama3-70b-8192")
+    """Legacy helper — the active provider's default model."""
+    return _provider_profile(cfg).get("default_model", "") or ""
+
+
+def get_provider(cfg=None, provider: str | None = None, api_key: str = ""):
+    """Build the active (or a named) provider adapter, resolving its key."""
+    cfg = cfg if cfg is not None else _load_config()
+    from core import providers as _providers
+    pid = provider or _providers.active_provider(cfg)
+    profile = _providers.provider_profile(cfg, pid)
+    key = _providers.provider_key(cfg, pid, explicit=api_key)
+    return make_provider(pid, profile, key)
 
 
 # ── Sync CLI ───────────────────────────────────────────────────────────────
+
+def _session_messages(prompt: str) -> list[dict]:
+    """Messages for a prompt, injecting session history if present."""
+    try:
+        from core.session import get_session
+        history = get_session().to_ollama_messages()
+        if (history and history[-1].get("role") == "user"
+                and history[-1].get("content") == prompt):
+            history = history[:-1]
+        if history:
+            return history + [{"role": "user", "content": prompt}]
+    except Exception:
+        pass
+    return [{"role": "user", "content": prompt}]
+
 
 def ask_ai(prompt: str, capture_output: bool = False) -> str | None:
     """
@@ -95,104 +122,28 @@ def ask_ai(prompt: str, capture_output: bool = False) -> str | None:
     If capture_output=True, also returns the full response string.
     """
     cfg = _load_config()
-    engine = _get_engine(cfg)
-
-    if engine == "ollama":
-        return _ask_ollama(prompt, cfg, capture_output=capture_output)
-    elif engine == "api":
-        return _ask_api(prompt, cfg, capture_output=capture_output)
-    else:
-        print(f"⚠️  Unknown AI engine: {engine}")
+    try:
+        provider = get_provider(cfg)
+    except Exception as exc:
+        print(f"⚠️  Provider error: {exc}")
         return None
 
-
-def _ask_ollama(prompt: str, cfg, *, capture_output: bool = False) -> str | None:
+    model = provider.resolve_model()
+    print(f"🤖 [{provider.provider_id}/{model}] thinking...\n")
+    collected: list[str] = []
     try:
-        import ollama
-        model = _get_ollama_model(cfg)
-
-        # Try multi-turn chat if session history exists
-        try:
-            from core.session import get_session
-            history = get_session().to_ollama_messages()
-            # If the current prompt is already saved as the last user turn
-            # (router adds it before calling), drop it to avoid duplication.
-            if (history and history[-1].get("role") == "user"
-                    and history[-1].get("content") == prompt):
-                history = history[:-1]
-            if history:
-                # Use chat API for multi-turn
-                messages = history + [{"role": "user", "content": prompt}]
-                print(f"🤖 [{model}] thinking...\n")
-                stream = ollama.chat(model=model, messages=messages, stream=True)
-                collected = []
-                for chunk in stream:
-                    token = chunk.get("message", {}).get("content", "")
-                    print(token, end="", flush=True)
-                    if capture_output:
-                        collected.append(token)
-                print("\n")
-                return "".join(collected) if capture_output else None
-        except Exception:
-            pass
-
-        # Single-turn fallback
-        print(f"🤖 [{model}] thinking...\n")
-        stream = ollama.generate(model=model, prompt=prompt, stream=True)
-        collected = []
-        for chunk in stream:
-            token = chunk.get("response", "")
+        for token in provider.stream(_session_messages(prompt), model=model):
             print(token, end="", flush=True)
             if capture_output:
                 collected.append(token)
         print("\n")
         return "".join(collected) if capture_output else None
-
-    except ImportError:
-        print("⚠️  ollama not installed. Run: pip install ollama")
-        print("   Then: ollama pull qwen2.5-coder:7b && ollama serve")
+    except ProviderError as exc:
+        print(f"\n⚠️  {exc}")
     except Exception as exc:
-        print(f"⚠️  Ollama error: {exc}")
-        print("   Make sure Ollama is running: ollama serve")
-    return None
-
-
-def _ask_api(prompt: str, cfg, *, capture_output: bool = False) -> str | None:
-    try:
-        import urllib.request
-        import json as _json
-
-        api_key = _get_api_key(cfg)
-        api_url = _get_api_url(cfg)
-        model   = _get_api_model(cfg)
-
-        if not api_key:
-            print("⚠️  API key not set.")
-            print("   Set env var: export DEV_ASSIST_API_KEY='your-key'")
-            print("   Or: config/settings.json → api_engine.api_key")
-            return None
-
-        payload = _json.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }).encode()
-
-        req = urllib.request.Request(
-            api_url, data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = _json.loads(resp.read())
-            reply = data["choices"][0]["message"]["content"]
-            print(f"\n🤖 [{model}]\n{reply}\n")
-            return reply if capture_output else None
-
-    except Exception as exc:
-        print(f"⚠️  API error: {exc}")
+        print(f"\n⚠️  {provider.label} error: {exc}")
+        if provider.kind == "ollama":
+            print("   Make sure Ollama is running: ollama serve")
     return None
 
 
@@ -200,74 +151,16 @@ def _ask_api(prompt: str, cfg, *, capture_output: bool = False) -> str | None:
 
 async def ask_ai_streaming(prompt: str) -> AsyncGenerator[str, None]:
     cfg = _load_config()
-    engine = _get_engine(cfg)
-
-    if engine == "ollama":
-        async for token in _stream_ollama(prompt, cfg):
-            yield token
-    elif engine == "api":
-        async for token in _stream_api(prompt, cfg):
-            yield token
-    else:
-        yield f"⚠️ Unknown engine: {engine}"
-
-
-async def _stream_ollama(prompt: str, cfg) -> AsyncGenerator[str, None]:
     try:
-        import ollama
-        import asyncio
-        model = _get_ollama_model(cfg)
-
-        def _gen():
-            return list(ollama.generate(model=model, prompt=prompt, stream=True))
-
-        loop = asyncio.get_running_loop()
-        chunks = await loop.run_in_executor(None, _gen)
-        for chunk in chunks:
-            token = chunk.get("response", "")
-            if token:
-                yield token
-
-    except ImportError:
-        yield "⚠️ ollama not installed. Run: `pip install ollama`"
+        provider = get_provider(cfg)
     except Exception as exc:
-        yield f"⚠️ Ollama error: {exc}\nMake sure Ollama is running: `ollama serve`"
-
-
-async def _stream_api(prompt: str, cfg) -> AsyncGenerator[str, None]:
+        yield f"⚠️ Provider error: {exc}"
+        return
+    model = provider.resolve_model()
     try:
-        import urllib.request
-        import json as _json
-
-        api_key = _get_api_key(cfg)
-        api_url = _get_api_url(cfg)
-        model   = _get_api_model(cfg)
-
-        if not api_key:
-            yield "⚠️ Set `DEV_ASSIST_API_KEY` env var or `api_key` in settings.json"
-            return
-
-        payload = _json.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }).encode()
-
-        req = urllib.request.Request(
-            api_url, data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-        )
-
-        def _call():
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return _json.loads(resp.read())
-
-        loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(None, _call)
-        yield data["choices"][0]["message"]["content"]
-
+        for token in provider.stream(_session_messages(prompt), model=model):
+            yield token
+    except ProviderError as exc:
+        yield f"⚠️ {exc}"
     except Exception as exc:
-        yield f"⚠️ API error: {exc}"
+        yield f"⚠️ {provider.label} error: {exc}"

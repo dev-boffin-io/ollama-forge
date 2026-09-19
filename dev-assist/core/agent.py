@@ -12,12 +12,15 @@ On each turn the model either calls tools (which we execute and feed back)
 or produces a final answer for that sub-task. The loop stops when the model
 stops requesting tools or the sub-task's budget is hit.
 
-Works against two backends with the same code path:
+Works against every provider in core.providers with the same code path:
   - Ollama's native tool calling (`ollama.chat(tools=...)`)
-  - OpenAI-compatible chat completions (Groq, etc.)
+  - OpenAI-compatible chat completions (OpenAI, Groq, OpenRouter,
+    Mistral, Azure, custom)
+  - Anthropic's Messages API (tool_use/tool_result blocks converted
+    to the same normalized message shape behind the adapter)
 
-Both accept the same JSON-Schema tool declarations and return tool calls
-in near-identical shapes, so the only real difference is transport.
+All providers accept the same JSON-Schema tool declarations; the
+adapters normalise tool calls into a single (id, name, args) shape.
 
 Destructive tools (write/edit/bash) are gated behind an approval
 callback. The default callback auto-approves read-only tools and refuses
@@ -149,38 +152,9 @@ def _message_text(message: Any) -> str:
     return getattr(message, "content", "") or ""
 
 
-def _call_ollama(messages: list[dict], model: str, *, tools: bool = True) -> Any:
-    import ollama
-    kwargs: dict = {"model": model, "messages": messages}
-    if tools:
-        kwargs["tools"] = TOOL_SCHEMAS
-    response = ollama.chat(**kwargs)
-    return response["message"] if isinstance(response, dict) else response.message
-
-
-def _call_api(messages: list[dict], cfg, *, tools: bool = True) -> Any:
-    import urllib.request
-    from core.ai import _get_api_key, _get_api_model, _get_api_url
-
-    payload: dict[str, Any] = {
-        "model": _get_api_model(cfg),
-        "messages": messages,
-        "stream": False,
-    }
-    if tools:
-        payload["tools"] = TOOL_SCHEMAS
-
-    req = urllib.request.Request(
-        _get_api_url(cfg),
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {_get_api_key(cfg)}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]
+def _chat(provider, messages: list[dict], *, tools: bool = True) -> dict:
+    """One non-streaming provider call in the agent loop."""
+    return provider.chat(messages, tools=TOOL_SCHEMAS if tools else None)
 
 
 def _assistant_turn(message: Any, calls: list[tuple[str, str, dict]]) -> dict:
@@ -203,9 +177,7 @@ def _assistant_turn(message: Any, calls: list[tuple[str, str, dict]]) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def _plan_subtasks(
     task: str,
-    cfg,
-    engine: str,
-    model: str | None,
+    provider,
     repo_map: str = "",
 ) -> list[dict]:
     """Ask the model to break the task into sub-tasks.
@@ -218,10 +190,7 @@ def _plan_subtasks(
         {"role": "user", "content": _plan_prompt_task(task, repo_map)},
     ]
     try:
-        message = (
-            _call_ollama(messages, model, tools=False) if engine == "ollama"
-            else _call_api(messages, cfg, tools=False)
-        )
+        message = _chat(provider, messages, tools=False)
         text = _message_text(message)
         return _parse_plan(text)
     except Exception:
@@ -336,9 +305,7 @@ def _run_subtask(
     total: int,
     subtask_messages: list[dict],
     *,
-    engine: str,
-    cfg,
-    model: str | None,
+    provider,
     workdir: str,
     approver: Callable[[str, dict], bool],
     emit: Callable[[str, str], None],
@@ -354,13 +321,10 @@ def _run_subtask(
     while steps_used < budget:
         steps_used += 1
         try:
-            message = (
-                _call_ollama(subtask_messages, model) if engine == "ollama"
-                else _call_api(subtask_messages, cfg)
-            )
+            message = _chat(provider, subtask_messages)
         except Exception as exc:
             hint = ""
-            if engine == "ollama":
+            if provider.kind == "ollama":
                 hint = (
                     "\nIf this says the model does not support tools, switch to a "
                     "tool-capable model (e.g. qwen2.5-coder:7b or llama3.1:8b)."
@@ -428,9 +392,7 @@ def _run_subtask(
 def _synthesize_final_answer(
     task: str,
     results: list[dict],
-    cfg,
-    engine: str,
-    model: str | None,
+    provider,
 ) -> str:
     """If the task was split, produce one combined final answer."""
     if len(results) <= 1:
@@ -453,10 +415,7 @@ def _synthesize_final_answer(
         {"role": "user", "content": user_msg},
     ]
     try:
-        message = (
-            _call_ollama(messages, model, tools=False) if engine == "ollama"
-            else _call_api(messages, cfg, tools=False)
-        )
+        message = _chat(provider, messages, tools=False)
         text = _message_text(message).strip()
         return text or "(no response)"
     except Exception:
@@ -502,10 +461,10 @@ def run_agent(
         if on_event:
             on_event(kind, text)
 
-    from core.ai import _get_engine, _get_ollama_model, _load_config
+    from core.ai import _load_config, get_provider as _get_provider
     cfg = _load_config()
-    engine = _get_engine(cfg)
-    model = _get_ollama_model(cfg) if engine == "ollama" else None
+    provider = _get_provider(cfg)
+    model = provider.resolve_model()
 
     # ── Project layout ──
     # A compact repo map (file tree + top-level signatures) goes into the
@@ -515,7 +474,7 @@ def run_agent(
     map_block = _map_block(map_info["text"])
 
     # ── Planning phase ──
-    plan = _plan_subtasks(task, cfg, engine, model, repo_map=map_block)
+    plan = _plan_subtasks(task, provider, repo_map=map_block)
     emit("plan", _format_plan(plan))
 
     system_content = SYSTEM_PROMPT.format(workdir=workdir)
@@ -550,7 +509,7 @@ def run_agent(
 
         summary, steps_used = _run_subtask(
             idx, len(plan), messages,
-            engine=engine, cfg=cfg, model=model,
+            provider=provider,
             workdir=workdir, approver=approver, emit=emit, budget=budget,
         )
         steps_used_total += steps_used
@@ -559,4 +518,4 @@ def run_agent(
 
     emit("text", "✓ All sub-tasks complete — writing final answer.")
 
-    return _synthesize_final_answer(task, results, cfg, engine, model)
+    return _synthesize_final_answer(task, results, provider)

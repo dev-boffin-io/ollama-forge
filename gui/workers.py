@@ -12,6 +12,7 @@ from PyQt6.QtCore import QMutex, QMutexLocker, QThread, pyqtSignal
 
 from ollama_client import OllamaClient
 from groq_client import GroqClient
+from providers import get_client
 
 _FLUSH_INTERVAL = 0.12
 
@@ -22,10 +23,6 @@ _SYSTEM_PROMPT = (
     "Use markdown formatting where it helps clarity. "
     "Be concise and complete — no meta-commentary, no apologies, "
     "no narration of what you are about to do."
-)
-
-_GROQ_VISION_KEYWORDS = (
-    "vision", "llava", "llama-4", "llama4", "scout", "maverick"
 )
 
 
@@ -90,6 +87,7 @@ class CrewChatWorker(_StopMixin, QThread):
 
     def __init__(self, prompt: str, crew_config: list[dict],
                  history: list[dict],
+                 provider_id: str = "ollama",
                  api_key: str = "",
                  api_model_override: str = ""):
         QThread.__init__(self)
@@ -97,26 +95,16 @@ class CrewChatWorker(_StopMixin, QThread):
         self.prompt          = prompt
         self.crew_config     = crew_config
         self.history         = history
-        self._api_key        = api_key
+        self._client         = get_client(provider_id, api_key)
+        self._provider_kind  = self._client.kind
         self._model_override = api_model_override
-
-        if api_key:
-            self._groq   = GroqClient(api_key=api_key)
-            self._ollama = None
-        else:
-            self._ollama = OllamaClient()
-            self._groq   = None
 
     def _run_agent(self, model: str, messages: list[dict]) -> str:
         response   = ""
         buf        = ""
         last_flush = 0
         use_model  = self._model_override if self._model_override else model
-        stream     = (
-            self._groq.chat_stream(use_model, messages)
-            if self._groq
-            else self._ollama.chat_stream(model, messages)
-        )
+        stream     = self._client.chat_stream(use_model, messages)
         try:
             for tok in stream:
                 if not self.is_running():
@@ -255,7 +243,7 @@ class SmartChatWorker(_StopMixin, QThread):
     def __init__(self, *, model: str, messages: list[dict],
                  images: list[str] = None,
                  text_injection: str = "",
-                 api_mode: bool = False,
+                 provider_id: str = "ollama",
                  api_key: str = "",
                  available_models: list[dict] = None,
                  rag_index=None,
@@ -266,23 +254,19 @@ class SmartChatWorker(_StopMixin, QThread):
         self.messages         = list(messages)
         self.images           = images or []
         self.text_injection   = text_injection
-        self.api_mode         = api_mode
+        self.provider_id      = provider_id
         self.api_key          = api_key
         self.available_models = available_models or []
         self.rag_index        = rag_index   # RAGIndex or None
         self.rag_query        = rag_query   # query string for RAG search
-
-        if api_mode:
-            self._groq   = GroqClient(api_key=api_key)
-            self._ollama = None
-        else:
-            self._ollama = OllamaClient()
-            self._groq   = None
+        self._client          = get_client(provider_id, api_key)
+        self._provider_kind   = self._client.kind
 
     def _is_vision_model(self, name: str) -> bool:
-        if self.api_mode:
-            lo = name.lower()
-            return any(k in lo for k in _GROQ_VISION_KEYWORDS)
+        if self._provider_kind != "ollama":
+            return self._client.vision_all or any(
+                k in name.lower() for k in self._client.vision_keywords
+            )
         for m in self.available_models:
             if m["name"] == name:
                 return m.get("vision", False)
@@ -292,15 +276,15 @@ class SmartChatWorker(_StopMixin, QThread):
         ))
 
     def _find_vision_model(self) -> str | None:
+        if getattr(self._client, "vision_all", False):
+            return self.model
         for m in self.available_models:
             if m.get("vision") and not m.get("embed"):
                 return m["name"]
         return None
 
     def _stream(self, model: str, messages: list[dict]):
-        if self.api_mode:
-            return self._groq.chat_stream(model, messages)
-        return self._ollama.chat_stream(model, messages)
+        return self._client.chat_stream(model, messages)
 
     def run(self):
         t0       = time.time()
@@ -357,14 +341,14 @@ class SmartChatWorker(_StopMixin, QThread):
                     )
                     self.images = []
 
-        if self.images and not self.api_mode:
+        if self.images and self._provider_kind == "ollama":
             for i in range(len(msgs) - 1, -1, -1):
                 if msgs[i]["role"] == "user":
                     msgs[i] = dict(msgs[i])
                     msgs[i]["images"] = self.images
                     break
 
-        if self.images and self.api_mode:
+        if self.images and self._provider_kind != "ollama":
             for i in range(len(msgs) - 1, -1, -1):
                 if msgs[i]["role"] == "user":
                     text    = msgs[i]["content"]
@@ -403,20 +387,15 @@ class CodeRunWorker(_StopMixin, QThread):
     status     = pyqtSignal(str)
 
     def __init__(self, response_text: str, *, model: str,
-                 api_mode: bool = False, api_key: str = ""):
+                 provider_id: str = "ollama", api_key: str = ""):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.response_text = response_text
         self.model         = model
-        self.api_mode      = api_mode
+        self.provider_id   = provider_id
         self.api_key       = api_key
-
-        if api_mode:
-            self._groq   = GroqClient(api_key=api_key)
-            self._ollama = None
-        else:
-            self._ollama = OllamaClient()
-            self._groq   = None
+        self._client       = get_client(provider_id, api_key)
+        self._provider_kind = self._client.kind
 
     def _get_debug_fix(self, lang: str, code: str, error_output: str) -> str:
         fix_prompt = (
@@ -431,11 +410,7 @@ class CodeRunWorker(_StopMixin, QThread):
         ]
         collected = ""
         try:
-            stream = (
-                self._groq.chat_stream(self.model, msgs)
-                if self.api_mode
-                else self._ollama.chat_stream(self.model, msgs)
-            )
+            stream = self._client.chat_stream(self.model, msgs)
             for tok in stream:
                 if not self.is_running():
                     break

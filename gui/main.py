@@ -32,11 +32,11 @@ from PyQt6.QtWidgets import (
 
 from database import DB_CLASS
 from ollama_client import OllamaClient
+from providers import PROVIDERS, PROVIDER_ORDER, get_client, env_key
 from workers import (
     DirectChatWorker, CrewChatWorker, RAGBuildWorker,
     GroqChatWorker, SmartChatWorker,
 )
-from groq_client import GroqClient
 from chat_renderer import chat_html
 from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
 from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
@@ -104,9 +104,10 @@ class OllamaGUI(QMainWindow):
         self.project_zip_tree: str        = ""      # formatted tree string
         self.project_zip_entries: list[str] = []    # all file paths inside zip
 
-        # ── API mode (Groq) ──────────────────────────────────────────
-        self.api_mode     = False
-        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        # ── Provider / API mode ──────────────────────────────────────
+        self.provider_id = "ollama"     # active provider id (see providers.py)
+        self.api_mode    = False        # derived: provider_id != "ollama"
+        self.api_key     = env_key(self.provider_id)
         self._saved_model  = ""   # restored by _load_settings below
 
         self._load_settings()   # overwrite defaults with persisted values
@@ -133,6 +134,7 @@ class OllamaGUI(QMainWindow):
         self._rag: "RAGIndex | None" = None   # noqa: F821
 
         self._init_ui()
+        self._apply_provider_ui()
         self._load_models()
         self._refresh_conversations()
         self._refresh_crews()
@@ -376,13 +378,18 @@ class OllamaGUI(QMainWindow):
         self.theme_btn.clicked.connect(self._toggle_theme)
         top.addWidget(self.theme_btn)
 
-        # ── Local / Groq API toggle ──────────────────────────────────
-        self.api_toggle_btn = QPushButton("🖥️ Local")
-        self.api_toggle_btn.setObjectName("apiToggleBtn")
-        self.api_toggle_btn.setMinimumHeight(60)
-        self.api_toggle_btn.setMinimumWidth(180)
-        self.api_toggle_btn.clicked.connect(self._toggle_api_mode)
-        top.addWidget(self.api_toggle_btn)
+        # ── Provider selector ───────────────────────────────────────
+        self.provider_sel = QComboBox()
+        self.provider_sel.setObjectName("providerSel")
+        for pid in PROVIDER_ORDER:
+            self.provider_sel.addItem(PROVIDERS[pid]["label"], pid)
+        idx = self.provider_sel.findData(self.provider_id)
+        self.provider_sel.setCurrentIndex(idx if idx >= 0 else 0)
+        self.provider_sel.setMinimumHeight(56)
+        self.provider_sel.setMinimumWidth(210)
+        self.provider_sel.setToolTip("AI provider — keys are read from env vars or the key row")
+        self.provider_sel.currentIndexChanged.connect(self._on_provider_changed)
+        top.addWidget(self.provider_sel)
 
         self.mem_btn = QPushButton("💬 Session")
         self.mem_btn.setObjectName("memBtn")
@@ -400,31 +407,32 @@ class OllamaGUI(QMainWindow):
         top.addWidget(self.server_btn)
         v.addLayout(top)
 
-        # ── Groq API key row (hidden by default) ─────────────────────
-        self.groq_row = QWidget()
-        groq_layout = QHBoxLayout(self.groq_row)
-        groq_layout.setContentsMargins(0, 4, 0, 4)
-        groq_layout.addWidget(QLabel("🔑 Groq API Key:"))
-        self.groq_key_input = QLineEdit()
-        self.groq_key_input.setPlaceholderText("gsk_… (paste your Groq API key)")
-        self.groq_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.groq_key_input.setMinimumHeight(56)
-        if self.groq_api_key:
-            self.groq_key_input.setText(self.groq_api_key)
-        groq_layout.addWidget(self.groq_key_input, 1)
-        self.groq_save_btn = QPushButton("✔ Apply")
-        self.groq_save_btn.setMinimumHeight(56)
-        self.groq_save_btn.setMinimumWidth(140)
-        self.groq_save_btn.clicked.connect(self._apply_groq_key)
-        groq_layout.addWidget(self.groq_save_btn)
-        self.groq_clear_btn = QPushButton("🗑 Clear")
-        self.groq_clear_btn.setMinimumHeight(56)
-        self.groq_clear_btn.setMinimumWidth(120)
-        self.groq_clear_btn.setToolTip("Remove saved Groq API key")
-        self.groq_clear_btn.clicked.connect(self._clear_groq_key)
-        groq_layout.addWidget(self.groq_clear_btn)
-        self.groq_row.setVisible(False)
-        v.addWidget(self.groq_row)
+        # ── API key row (hidden until a key-needing provider is active) ─
+        self.key_row = QWidget()
+        key_layout = QHBoxLayout(self.key_row)
+        key_layout.setContentsMargins(0, 4, 0, 4)
+        self.key_label = QLabel("🔑 API Key:")
+        key_layout.addWidget(self.key_label)
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("Paste API key")
+        self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key_input.setMinimumHeight(56)
+        if self.api_key:
+            self.key_input.setText(self.api_key)
+        key_layout.addWidget(self.key_input, 1)
+        self.save_key_btn = QPushButton("✔ Apply")
+        self.save_key_btn.setMinimumHeight(56)
+        self.save_key_btn.setMinimumWidth(140)
+        self.save_key_btn.clicked.connect(self._apply_api_key)
+        key_layout.addWidget(self.save_key_btn)
+        self.clear_key_btn = QPushButton("🗑 Clear")
+        self.clear_key_btn.setMinimumHeight(56)
+        self.clear_key_btn.setMinimumWidth(120)
+        self.clear_key_btn.setToolTip("Remove saved API key")
+        self.clear_key_btn.clicked.connect(self._clear_api_key)
+        key_layout.addWidget(self.clear_key_btn)
+        self.key_row.setVisible(False)
+        v.addWidget(self.key_row)
 
         # Chat display — QTextBrowser renders HTML (markdown, code blocks, tables)
         self.chat = QTextBrowser()
@@ -541,10 +549,8 @@ class OllamaGUI(QMainWindow):
                 QPushButton#stopBtn[active="true"]:hover { background:#a02020; }
                 QPushButton#crewBtn { background:#2d2d2d; color:#e0e0e0; }
                 QPushButton#crewBtn[active="true"] { background:#1a7f3c; color:white; font-weight:bold; }
-                QPushButton#apiToggleBtn { background:#1a4f8f; color:white; font-weight:bold; }
-                QPushButton#apiToggleBtn:hover { background:#153b6e; }
-                QPushButton#apiToggleBtn[api="true"] { background:#7b3fa0; color:white; font-weight:bold; }
-                QPushButton#apiToggleBtn[api="true"]:hover { background:#5e2e7a; }
+                QComboBox#providerSel { background:#1a2b45; color:white; font-weight:bold;
+                    border:1px solid #2a3a55; border-radius:8px; padding:8px; }
                 QPushButton#chatTitleBtn { background:#1e2736; color:#a8c4e8;
                     border:1px solid #2a3a52; text-align:left; padding-left:14px; }
                 QPushButton#chatTitleBtn:hover { background:#253040; }
@@ -584,10 +590,8 @@ class OllamaGUI(QMainWindow):
                 QPushButton#stopBtn[active="true"]:hover {{ background:#b71c1c; }}
                 QPushButton#crewBtn {{ background:#1a73e8; color:white; }}
                 QPushButton#crewBtn[active="true"] {{ background:#1a7f3c; color:white; font-weight:bold; }}
-                QPushButton#apiToggleBtn {{ background:#1a4f8f; color:white; font-weight:bold; }}
-                QPushButton#apiToggleBtn:hover {{ background:#153b6e; }}
-                QPushButton#apiToggleBtn[api="true"] {{ background:#7b3fa0; color:white; font-weight:bold; }}
-                QPushButton#apiToggleBtn[api="true"]:hover {{ background:#5e2e7a; }}
+                QComboBox#providerSel {{ background:#eef2f9; color:#1a1a2e; font-weight:bold;
+                    border:1px solid #c8cdd4; border-radius:8px; padding:8px; }}
                 QPushButton#chatTitleBtn {{ background:#e8f0fe; color:#1a4f8f;
                     border:1px solid #b8cef8; text-align:left; padding-left:14px; }}
                 QPushButton#chatTitleBtn:hover {{ background:#d2e3fc; }}
@@ -613,17 +617,24 @@ class OllamaGUI(QMainWindow):
         self.models = []
         self.model_box.clear()
 
-        # ── Groq API mode ────────────────────────────────────────────
+        # ── Remote provider (API mode) ─────────────────────────────
         if self.api_mode:
-            groq = GroqClient(api_key=self.groq_api_key)
-            groq_models = groq.list_models()
-            self.models = groq_models   # each dict already has "name" + "vision"
-            for m in groq_models:
-                self.model_box.addItem(m["name"])
+            client    = get_client(self.provider_id, self.api_key)
+            remote_models: list[dict] = []
+            try:
+                remote_models = client.list_models()
+                self.models = remote_models
+                for m in remote_models:
+                    self.model_box.addItem(m["name"])
+                if not remote_models:
+                    self.model_box.addItem("llama3.2:latest")
+            except Exception as e:
+                self.model_box.addItem("llama3.2:latest")
+                self._log(f"⚠️ {client.label} — {str(e)[:120]}")
             # For RAG in API mode, keep sentence-transformers embed options
             self.embed_box.clear()
             self.embed_box.addItems(_EMBED_FALLBACKS)
-            self._log(f"☁️ Groq API mode — {len(groq_models)} models loaded.")
+            self._log(f"☁️ {client.label} — {len(remote_models)} models loaded.")
             self._restore_saved_model()
             self._apply_memory_btn_state()
             return
@@ -1325,8 +1336,10 @@ class OllamaGUI(QMainWindow):
                 self._log("❌ No crew selected!")
                 self._update_stop_btn(False)
                 return
-            if self.api_mode and not self.groq_api_key.strip():
-                self._log("❌ Groq API key not set!")
+            label = PROVIDERS[self.provider_id]["label"]
+            if (self.api_mode and PROVIDERS[self.provider_id].get("needs_key")
+                    and not env_key(self.provider_id, self.api_key)):
+                self._log(f"❌ {label} API key not set!")
                 self._update_stop_btn(False)
                 return
             crew_cfg = copy.deepcopy(self.current_crew_cfg)
@@ -1345,7 +1358,8 @@ class OllamaGUI(QMainWindow):
                 ).strip()
             self.thread = CrewChatWorker(
                 prompt, crew_cfg, history,
-                api_key=self.groq_api_key if self.api_mode else "",
+                provider_id=self.provider_id,
+                api_key=self.api_key,
                 api_model_override=self.model_box.currentText() if self.api_mode else "",
             )
             self.thread.token.connect(self._append_token)
@@ -1356,8 +1370,11 @@ class OllamaGUI(QMainWindow):
             return
 
         # ── Smart chat (single model, with attachments) ───────────────
-        if self.api_mode and not self.groq_api_key.strip():
-            self._log("❌ Groq API key not set! Switch to API mode and enter your key.")
+        label = PROVIDERS[self.provider_id]["label"]
+        if (self.api_mode and PROVIDERS[self.provider_id].get("needs_key")
+                and not env_key(self.provider_id, self.api_key)):
+            self._log(f"❌ {label} API key not set! Add it above or set "
+                      f"{PROVIDERS[self.provider_id].get('env_var', 'the env var')}.")
             self._update_stop_btn(False)
             return
 
@@ -1366,8 +1383,8 @@ class OllamaGUI(QMainWindow):
             messages         = ollama_msgs,
             images           = images,
             text_injection   = text_injection,
-            api_mode         = self.api_mode,
-            api_key          = self.groq_api_key,
+            provider_id      = self.provider_id,
+            api_key          = self.api_key,
             available_models = self.models,
             rag_index        = rag_index,
             rag_query        = prompt,
@@ -1490,8 +1507,17 @@ class OllamaGUI(QMainWindow):
                 data = json.load(f)
             if "dark" in data:
                 self.dark = bool(data["dark"])
-            if data.get("groq_api_key"):
-                self.groq_api_key = data["groq_api_key"]
+            provider = data.get("provider", "")
+            if provider in PROVIDERS:
+                self.provider_id = provider
+            if data.get("api_key"):
+                self.api_key = data["api_key"]
+            elif data.get("groq_api_key"):
+                # legacy key name from older releases
+                self.api_key = data["groq_api_key"]
+            if not self.api_key:
+                self.api_key = env_key(self.provider_id)
+            self.api_mode = self.provider_id != "ollama"
             self._saved_model = data.get("selected_model", "")
             # Restore persistent memory toggle
             if data.get("persistent_memory", False):
@@ -1527,11 +1553,12 @@ class OllamaGUI(QMainWindow):
         self._save_settings()
 
     def _save_settings(self) -> None:
-        """Persist current theme and Groq API key to ~/.ollama_gui/settings.json."""
+        """Persist current theme, provider, and API key to ~/.ollama_gui/settings.json."""
         os.makedirs(_CONFIG_DIR, exist_ok=True)
         data = {
             "dark": self.dark,
-            "groq_api_key": self.groq_api_key,
+            "provider": self.provider_id,
+            "api_key": self.api_key,
             "selected_model": self.model_box.currentText(),
             "persistent_memory": self._persistent_memory,
         }
@@ -1541,69 +1568,83 @@ class OllamaGUI(QMainWindow):
         except Exception as exc:
             self._log(f"⚠️ Could not save settings: {exc}\n")
 
-    def _clear_groq_key(self) -> None:
-        """Clear the saved Groq API key from memory and disk."""
-        self.groq_api_key = ""
-        self.groq_key_input.clear()
+    def _clear_api_key(self) -> None:
+        """Clear the saved API key from memory and disk."""
+        self.api_key = ""
+        self.key_input.clear()
         self._save_settings()
-        self._log("🗑 Groq API key cleared.\n")
+        self._log("🗑 API key cleared.\n")
 
-    def _toggle_api_mode(self):
-        """Switch between Local Ollama and Groq API mode."""
-        self.api_mode = not self.api_mode
+    def _provider_label(self, pid: str | None = None) -> str:
+        return PROVIDERS.get(pid or self.provider_id, {}).get(
+            "label", pid or self.provider_id)
 
-        # Update toggle button appearance
-        self.api_toggle_btn.setProperty("api", "true" if self.api_mode else "false")
-        self.api_toggle_btn.style().unpolish(self.api_toggle_btn)
-        self.api_toggle_btn.style().polish(self.api_toggle_btn)
+    def _apply_provider_ui(self):
+        """Sync UI chrome (combo, key row, server button) to self.provider_id."""
+        pid = self.provider_id
+        self.api_mode = pid != "ollama"
+        prof  = PROVIDERS.get(pid, {})
+        needs = bool(prof.get("needs_key"))
 
-        if self.api_mode:
-            self.api_toggle_btn.setText("☁️ Groq API")
-            self.groq_row.setVisible(True)
-            # Hide server button in API mode — not needed
-            self.server_btn.setVisible(False)
-            self.mgr_btn.setVisible(False)
-            self._log("☁️ Switched to Groq API mode.\n")
-        else:
-            self.api_toggle_btn.setText("🖥️ Local")
-            self.groq_row.setVisible(False)
-            self.server_btn.setVisible(True)
-            self.mgr_btn.setVisible(True)
-            self._log("🖥️ Switched to Local Ollama mode.\n")
+        self.provider_sel.blockSignals(True)
+        idx = self.provider_sel.findData(pid)
+        self.provider_sel.setCurrentIndex(idx if idx >= 0 else 0)
+        self.provider_sel.blockSignals(False)
 
+        self.key_row.setVisible(self.api_mode and needs)
+        self.key_label.setText(f"🔑 {prof.get('label', pid)} API Key:")
+        self.key_input.setPlaceholderText(f"Paste {prof.get('label', pid)} API key")
+        self.key_input.setText(self.api_key)
+
+        self.server_btn.setVisible(not self.api_mode)
+        self.mgr_btn.setVisible(not self.api_mode)
+
+    def _on_provider_changed(self, index=None):
+        """Provider selector changed — switch and reload."""
+        pid = self.provider_sel.currentData()
+        if not pid or pid == self.provider_id:
+            return
+        self.provider_id = pid
+        self.api_mode    = pid != "ollama"
+        if not self.api_key:
+            self.api_key = env_key(pid)
+        self._save_settings()
+        self._log(f"☁️ Switched to {self._provider_label(pid)}.\n"
+                  if self.api_mode else "🖥️ Switched to Local Ollama.\n")
+        self._apply_provider_ui()
         self._load_models()
         self._check_server_state()
 
-    def _apply_groq_key(self):
-        """Validate and save Groq API key, then reload model list."""
-        key = self.groq_key_input.text().strip()
+    def _apply_api_key(self):
+        """Validate and save the API key, then reload the model list."""
+        key = self.key_input.text().strip()
         if not key:
-            QMessageBox.warning(self, "Groq API Key", "Please enter your Groq API key.")
+            QMessageBox.warning(self, "API Key", "Please enter your API key.")
             return
 
-        self.groq_save_btn.setEnabled(False)
-        self.groq_save_btn.setText("⏳ Checking…")
-        self._log("🔑 Validating Groq API key…\n")
+        self.save_key_btn.setEnabled(False)
+        self.save_key_btn.setText("⏳ Checking…")
+        self._log("🔑 Validating API key…\n")
 
         # Force the UI to repaint before the blocking HTTP call
         QApplication.processEvents()
 
         try:
-            ok, err = GroqClient(api_key=key).validate_key()
+            ok, err = get_client(self.provider_id, key).validate_key()
         except Exception as e:
             ok, err = False, str(e)
 
-        self.groq_save_btn.setEnabled(True)
-        self.groq_save_btn.setText("✔ Apply")
+        self.save_key_btn.setEnabled(True)
+        self.save_key_btn.setText("✔ Apply")
 
         if ok:
-            self.groq_api_key = key
+            self.api_key = key
             self._save_settings()
-            self._log("✅ Groq API key valid — saved and models reloaded.\n")
+            self._log(f"✅ API key valid — saved and models reloaded.\n")
             self._load_models()
         else:
-            self._log(f"❌ Groq key error: {err}\n")
-            QMessageBox.critical(self, "Groq API Key Error", err)
+            self._log(f"❌ Key error: {err}\n")
+            QMessageBox.critical(self, "API Key Error", err)
 
     # ================================================================ #
     #  OLLAMA SERVER TOGGLE                                              #
@@ -1637,7 +1678,8 @@ class OllamaGUI(QMainWindow):
                 "⏸ Ollama server stopped — press [Server: OFF] to start"
             )
         elif self.api_mode:
-            self.input.setPlaceholderText("Type your message… (Groq API — Ctrl+Enter to send)")
+            self.input.setPlaceholderText(
+                f"Type your message… ({self._provider_label()} — Ctrl+Enter to send)")
         else:
             self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
 
@@ -1985,10 +2027,9 @@ class OllamaGUI(QMainWindow):
 
             def _call_llm(prompt: str) -> list:
                 try:
-                    if self.api_mode and self.groq_api_key.strip():
-                        from groq_client import GroqClient
+                    if self.api_mode:
                         raw = "".join(
-                            GroqClient(api_key=self.groq_api_key).chat_stream(
+                            get_client(self.provider_id, self.api_key).chat_stream(
                                 self.model_box.currentText(),
                                 [{"role": "user", "content": prompt}],
                             )
