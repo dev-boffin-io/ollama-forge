@@ -372,9 +372,8 @@ class TestConfig:
             cfg_mod.CONFIG_PATH = settings_path
             from core.config import load_config
             cfg = load_config()
-            assert isinstance(cfg, dict)
-            assert cfg["active_provider"] == "groq"
-            assert "ollama" in cfg["providers"]
-            assert "azure" in cfg["providers"]
+            assert cfg.active_provider == "groq"
+            assert "ollama" in cfg.providers
+            assert "azure" in cfg.providers
         finally:
             cfg_mod.CONFIG_PATH = orig
