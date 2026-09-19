@@ -1,10 +1,16 @@
 """
-Agent — the tool-calling loop.
+Agent — the tool-calling loop with multi-step planning.
 
-This is what makes `da` act rather than just answer: the model is given
-the tool registry from core.tools, and on each turn it either calls
-tools (which we execute and feed back) or produces a final answer. The
-loop runs until the model stops requesting tools, or MAX_STEPS is hit.
+This is what makes `da` act rather than just answer: the model breaks the
+task into sub-tasks up front (a plan), then executes each one with the
+full tool registry from core.tools, carrying the result of each prior
+sub-task forward as context for the next. Each sub-task gets its own step
+budget instead of one budget for the whole run, so large tasks no longer
+hit a single hard limit partway through.
+
+On each turn the model either calls tools (which we execute and feed back)
+or produces a final answer for that sub-task. The loop stops when the model
+stops requesting tools or the sub-task's budget is hit.
 
 Works against two backends with the same code path:
   - Ollama's native tool calling (`ollama.chat(tools=...)`)
@@ -23,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Callable
 
 from core.tools import (
@@ -33,7 +40,9 @@ from core.tools import (
 )
 from core import change_tracker
 
-MAX_STEPS = 24
+MAX_STEPS = 24             # per sub-task step budget
+MAX_SUBTASKS = 5           # how many sub-tasks a plan may contain
+TOTAL_STEPS_CAP = 120      # hard safety cap across all sub-tasks
 
 SYSTEM_PROMPT = """You are dev-assist, a coding agent that works directly in the user's project.
 
@@ -48,6 +57,27 @@ Work in small, verifiable steps. After changing code, check your work (run the t
 When the task is done, stop calling tools and reply with a short summary of what you changed. Be concise. Do not pad the answer with restatements of the question.
 
 Working directory: {workdir}"""
+
+PLANNING_PROMPT = """You are the task planner for dev-assist, a coding agent.
+The user has a single overall request, but a long one that may require many steps.
+
+Break the request into a short sequence of concrete sub-tasks, ordered so the
+agent can execute them one after another. Each sub-task must be small enough that
+a coding agent with file read/write/edit and bash tools can finish it in a handful
+of tool calls. Prefer 2-5 sub-tasks; bundle related work to keep the plan tight.
+
+Return a JSON object — and ONLY a JSON object, no prose, no markdown fences — with
+the shape:
+
+{"subtasks": [{"title": "short label", "goal": "what to accomplish in this step"}]}
+
+The "goal" must be self-contained: it will be given to the agent as the only
+instructions for that step, along with the results of earlier steps.
+"""
+
+
+def _plan_prompt_task(task: str) -> str:
+    return f"Overall task:\n{task}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -108,26 +138,30 @@ def _message_text(message: Any) -> str:
     return getattr(message, "content", "") or ""
 
 
-def _call_ollama(messages: list[dict], model: str) -> Any:
+def _call_ollama(messages: list[dict], model: str, *, tools: bool = True) -> Any:
     import ollama
-    response = ollama.chat(model=model, messages=messages, tools=TOOL_SCHEMAS)
+    kwargs: dict = {"model": model, "messages": messages}
+    if tools:
+        kwargs["tools"] = TOOL_SCHEMAS
+    response = ollama.chat(**kwargs)
     return response["message"] if isinstance(response, dict) else response.message
 
 
-def _call_api(messages: list[dict], cfg) -> Any:
+def _call_api(messages: list[dict], cfg, *, tools: bool = True) -> Any:
     import urllib.request
     from core.ai import _get_api_key, _get_api_model, _get_api_url
 
-    payload = json.dumps({
+    payload: dict[str, Any] = {
         "model": _get_api_model(cfg),
         "messages": messages,
-        "tools": TOOL_SCHEMAS,
         "stream": False,
-    }).encode()
+    }
+    if tools:
+        payload["tools"] = TOOL_SCHEMAS
 
     req = urllib.request.Request(
         _get_api_url(cfg),
-        data=payload,
+        data=json.dumps(payload).encode(),
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {_get_api_key(cfg)}",
@@ -154,53 +188,159 @@ def _assistant_turn(message: Any, calls: list[tuple[str, str, dict]]) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# The loop
+# Planning
 # ─────────────────────────────────────────────────────────────────────
-def run_agent(
+def _plan_subtasks(
     task: str,
-    *,
-    workdir: str | None = None,
-    approver: Callable[[str, dict], bool] | None = None,
-    on_event: Callable[[str, str], None] | None = None,
-    max_steps: int = MAX_STEPS,
-) -> str:
+    cfg,
+    engine: str,
+    model: str | None,
+) -> list[dict]:
+    """Ask the model to break the task into sub-tasks.
+
+    Returns a list of {"title", "goal"} dicts, or a single-element plan
+    holding the whole task if the model can't/won't produce a usable plan.
     """
-    Run the agent until it stops calling tools.
-
-    task      — what the user asked for.
-    workdir   — project root; defaults to the current directory.
-    approver  — called as approver(tool_name, args) -> bool before any
-                destructive tool runs. Defaults to refusing them.
-    on_event  — optional progress hook, called as on_event(kind, text)
-                with kind in {"tool", "result", "text", "warn"}.
-
-    Returns the agent's final text answer.
-    """
-    workdir = os.path.abspath(workdir or os.getcwd())
-    approver = approver or auto_approve_readonly
-    tracker = change_tracker.new_run()
-
-    def emit(kind: str, text: str) -> None:
-        if on_event:
-            on_event(kind, text)
-
-    from core.ai import _get_engine, _get_ollama_model, _load_config
-    cfg = _load_config()
-    engine = _get_engine(cfg)
-    model = _get_ollama_model(cfg) if engine == "ollama" else None
-
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(workdir=workdir)},
-        {"role": "user", "content": task},
+    messages = [
+        {"role": "system", "content": PLANNING_PROMPT},
+        {"role": "user", "content": _plan_prompt_task(task)},
     ]
+    try:
+        message = (
+            _call_ollama(messages, model, tools=False) if engine == "ollama"
+            else _call_api(messages, cfg, tools=False)
+        )
+        text = _message_text(message)
+        return _parse_plan(text)
+    except Exception:
+        return [{"title": "Complete the task", "goal": task}]
 
+
+def _parse_plan(text: str) -> list[dict]:
+    """Parse the planner's JSON response very tolerantly."""
+    if not text:
+        return [{"title": "Complete the task", "goal": ""}]
+    # Strip markdown fences if the model ignored the "no fences" rule.
+    cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", text.strip())
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+
+    def _extract(obj: Any) -> list[dict]:
+        if isinstance(obj, dict) and isinstance(obj.get("subtasks"), list):
+            items = obj["subtasks"]
+        elif isinstance(obj, list):
+            items = obj
+        else:
+            return []
+        plan = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title") or it.get("name") or "").strip()
+            goal = str(it.get("goal") or it.get("description") or "").strip()
+            if title or goal:
+                plan.append({"title": title or f"Step {len(plan) + 1}",
+                             "goal": goal or title or ""})
+        return plan
+
+    try:
+        plan = _extract(json.loads(cleaned))
+        if plan:
+            return plan[:MAX_SUBTASKS]
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: find the first JSON array-looking span.
+    for m in re.finditer(r"\[[^\[]*?\]", cleaned, re.DOTALL):
+        try:
+            plan = _extract(json.loads(m.group(0)))
+            if plan:
+                return plan[:MAX_SUBTASKS]
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    # Fallback: numbered/bulleted list, one sub-task per line. Only accept
+    # lines that actually start with a list marker so prose isn't misread
+    # as a single-item plan.
+    plan = []
+    for ln in cleaned.splitlines():
+        s = ln.strip()
+        if not re.match(r"^(?:[-•*\d]+[.)]?)\s+\S", s):
+            continue
+        s = re.sub(r"^\s*(?:[-•*\d]+[.)]?)\s*", "", s)
+        s = re.sub(r"^\s*(?:[-•*\d]+[.)]?)\s*", "", s)
+        if len(s) >= 3 and not s.lower().startswith(("subtask", "overall task")):
+            plan.append({"title": s[:60], "goal": s})
+    if plan:
+        return plan[:MAX_SUBTASKS]
+
+    return [{"title": "Complete the task", "goal": ""}]
+
+
+def _format_plan(plan: list[dict]) -> str:
+    lines = ["📋 Plan:"]
+    for i, st in enumerate(plan, 1):
+        lines.append(f"  {i}. {st['title']}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Sub-task execution
+# ─────────────────────────────────────────────────────────────────────
+def _build_subtask_context(
+    task: str,
+    plan: list[dict],
+    idx: int,
+    results: list[dict],
+) -> str:
+    """Context block for one sub-task, carrying prior sub-task results forward."""
+    parts = [f"## Overall task\n{task}"]
+
+    if len(plan) > 1:
+        lines = ["\n## Plan"]
+        for i, st in enumerate(plan, 1):
+            marker = "← current" if i == idx else ("done" if i < idx else "")
+            lines.append(f"  {i}. {st['title']} {('[' + marker + ']') if marker else ''}")
+        parts.append("\n".join(lines))
+
+    if results:
+        lines = ["\n## Results so far"]
+        for r in results:
+            lines.append(f"- **{r['title']}**: {r['summary'][:500]}")
+        parts.append("\n".join(lines))
+
+    current = plan[idx - 1]
+    parts.append(f"\n## Current sub-task ({idx} of {len(plan)})\n{current['title']}\n\n{current['goal']}")
+    parts.append("\nWork on exactly this sub-task. When it is done, stop calling tools and "
+                 "reply with a concise summary of what you did for this sub-task.")
+    return "\n".join(parts)
+
+
+def _run_subtask(
+    idx: int,
+    total: int,
+    subtask_messages: list[dict],
+    *,
+    engine: str,
+    cfg,
+    model: str | None,
+    workdir: str,
+    approver: Callable[[str, dict], bool],
+    emit: Callable[[str, str], None],
+    budget: int,
+) -> tuple[str, int]:
+    """Run the tool loop for one sub-task with its own step budget.
+
+    Returns (final_text, steps_used).
+    """
     final_text = ""
+    steps_used = 0
 
-    for step in range(max_steps):
+    while steps_used < budget:
+        steps_used += 1
         try:
             message = (
-                _call_ollama(messages, model) if engine == "ollama"
-                else _call_api(messages, cfg)
+                _call_ollama(subtask_messages, model) if engine == "ollama"
+                else _call_api(subtask_messages, cfg)
             )
         except Exception as exc:
             hint = ""
@@ -209,12 +349,11 @@ def run_agent(
                     "\nIf this says the model does not support tools, switch to a "
                     "tool-capable model (e.g. qwen2.5-coder:7b or llama3.1:8b)."
                 )
-            return f"⚠️  Model call failed: {exc}{hint}"
+            return f"Model call failed: {exc}{hint}", steps_used
 
         calls = _normalise_tool_calls(message)
         text = _message_text(message)
 
-        # No tool calls → the model is done talking.
         if not calls:
             final_text = text.strip()
             if final_text:
@@ -224,7 +363,7 @@ def run_agent(
         if text.strip():
             emit("text", text.strip())
 
-        messages.append(_assistant_turn(message, calls))
+        subtask_messages.append(_assistant_turn(message, calls))
 
         for call_id, name, args in calls:
             emit("tool", describe_call(name, args))
@@ -242,6 +381,7 @@ def run_agent(
                 if name in ("write_file", "edit_file"):
                     from core.tools import resolve_path
                     file_path = resolve_path(args.get("path"), workdir)
+                    tracker = change_tracker.get_tracker()
                     tracker.snapshot(file_path)
 
                 result = execute_tool(name, args, workdir)
@@ -254,7 +394,7 @@ def run_agent(
                     except Exception:
                         pass
 
-            messages.append({
+            subtask_messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,
                 "name": name,
@@ -262,9 +402,123 @@ def run_agent(
             })
     else:
         final_text = (
-            f"⚠️  Stopped after {max_steps} steps without finishing. "
-            f"The task may be too large — try breaking it into smaller pieces."
+            f"Sub-task {idx}/{total} stopped after reaching its {budget}-step budget."
         )
         emit("warn", final_text)
 
-    return final_text or "(no response)"
+    return final_text or "(no response)", steps_used
+
+
+def _synthesize_final_answer(
+    task: str,
+    results: list[dict],
+    cfg,
+    engine: str,
+    model: str | None,
+) -> str:
+    """If the task was split, produce one combined final answer."""
+    if len(results) <= 1:
+        return results[0]["summary"] if results else "(no response)"
+
+    parts = [f"Overall task: {task}", "\nSub-task outcomes:"]
+    for r in results:
+        parts.append(f"\n### {r['title']}\n{r['summary']}")
+    user_msg = (
+        "\n".join(parts)
+        + "\n\nWrite a single concise final answer for the user that summarizes "
+          "everything that was done, the key files changed, and any follow-up "
+          "the user should be aware of."
+    )
+    messages = [
+        {"role": "system", "content": (
+            "You are dev-assist. Produce a short, well-structured final answer "
+            "for the user based on the completed sub-task results below."
+        )},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        message = (
+            _call_ollama(messages, model, tools=False) if engine == "ollama"
+            else _call_api(messages, cfg, tools=False)
+        )
+        text = _message_text(message).strip()
+        return text or "(no response)"
+    except Exception:
+        # Fall back to concatenating the last sub-task summary.
+        return results[-1]["summary"] or "(no response)"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# The loop
+# ─────────────────────────────────────────────────────────────────────
+def run_agent(
+    task: str,
+    *,
+    workdir: str | None = None,
+    approver: Callable[[str, dict], bool] | None = None,
+    on_event: Callable[[str, str], None] | None = None,
+    max_steps: int = MAX_STEPS,
+) -> str:
+    """
+    Run the agent, planning the task into sub-tasks and executing each
+    with its own step budget, carrying prior results forward.
+
+    task      — what the user asked for.
+    workdir   — project root; defaults to the current directory.
+    approver  — called as approver(tool_name, args) -> bool before any
+                destructive tool runs. Defaults to refusing them.
+    on_event  — optional progress hook, called as on_event(kind, text)
+                with kind in {"tool", "result", "text", "warn", "plan"}.
+    max_steps — per sub-task step budget (default 24).
+
+    Returns the agent's final combined answer.
+    """
+    workdir = os.path.abspath(workdir or os.getcwd())
+    approver = approver or auto_approve_readonly
+    change_tracker.new_run()
+
+    def emit(kind: str, text: str) -> None:
+        if on_event:
+            on_event(kind, text)
+
+    from core.ai import _get_engine, _get_ollama_model, _load_config
+    cfg = _load_config()
+    engine = _get_engine(cfg)
+    model = _get_ollama_model(cfg) if engine == "ollama" else None
+
+    # ── Planning phase ──
+    plan = _plan_subtasks(task, cfg, engine, model)
+    emit("plan", _format_plan(plan))
+
+    results: list[dict] = []
+    steps_used_total = 0
+
+    for idx, subtask in enumerate(plan, 1):
+        if steps_used_total >= TOTAL_STEPS_CAP:
+            emit("warn", f"Reached the overall {TOTAL_STEPS_CAP}-step safety cap; "
+                         f"stopping before sub-task {idx}/{len(plan)}.")
+            break
+
+        context = _build_subtask_context(task, plan, idx, results)
+        messages: list[dict] = [
+            {"role": "system", "content": SYSTEM_PROMPT.format(workdir=workdir)},
+            {"role": "user", "content": context},
+        ]
+
+        remaining_budget = TOTAL_STEPS_CAP - steps_used_total
+        budget = max(1, min(max_steps, remaining_budget))
+
+        emit("text", f"▶ Sub-task {idx}/{len(plan)}: {subtask['title']}")
+
+        summary, steps_used = _run_subtask(
+            idx, len(plan), messages,
+            engine=engine, cfg=cfg, model=model,
+            workdir=workdir, approver=approver, emit=emit, budget=budget,
+        )
+        steps_used_total += steps_used
+
+        results.append({"title": subtask["title"], "summary": summary})
+
+    emit("text", "✓ All sub-tasks complete — writing final answer.")
+
+    return _synthesize_final_answer(task, results, cfg, engine, model)

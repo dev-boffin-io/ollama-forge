@@ -47,6 +47,11 @@ def _make_renderer(verbose: bool):
             icon = _TOOL_ICONS.get(name, "•")
             tui_status.set_activity(text[:60])
             _print(f"  {icon} [cyan]{text}[/cyan]")
+        elif kind == "plan":
+            if _console:
+                _console.print(Panel(text, title="Plan", border_style="blue"))
+            else:
+                _print(text)
         elif kind == "result":
             if not verbose:
                 return
