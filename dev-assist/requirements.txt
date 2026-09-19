@@ -7,6 +7,10 @@ ollama                        # local AI — recommended
 # openai                      # OpenAI API
 # groq                        # Groq API (fast free tier)
 
+# ── HTTP / packaging (required — ollama-main CLI + plugins + web API) ────────
+requests>=2.28                # GitHub API, Ollama REST, plugin requests
+packaging>=23.0               # version parsing for ollama-main update checks
+
 # ── Config validation (strongly recommended) ─────────────────────────────────
 pydantic>=2.0
 
