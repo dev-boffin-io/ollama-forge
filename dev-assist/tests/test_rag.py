@@ -200,6 +200,38 @@ class TestVectorStore:
         results = search("function compute", top_k=3)
         assert len(results) <= 3
 
+    def test_embeddings_fallback_when_ollama_missing(self):
+        # The default env has no `ollama` package (tests are dependency-free),
+        # so embeddings must be reported inactive and retrieval must still work
+        # via the TF-IDF fallback.
+        from core.vector_store import save_chunks, search, embedding_status, get_stats
+        active, model = embedding_status()
+        assert active is False
+        assert model is None
+        save_chunks("/fb.py", [{"content": "def foo(): return 'pandas'", "start_line": 1, "end_line": 1}])
+        stats = get_stats()
+        assert stats["embeddings_active"] is False
+        assert stats["embedded_chunks"] == 0
+        results = search("pandas")
+        assert len(results) >= 1
+
+    def test_batch_connection_commits_on_exit(self):
+        from core.vector_store import batch_connection, save_chunks, get_stats, clear_index
+        with batch_connection() as conn:
+            save_chunks("/ba.py", [{"content": "alpha", "start_line": 1, "end_line": 1}], conn=conn)
+            save_chunks("/bb.py", [{"content": "beta", "start_line": 1, "end_line": 1}], conn=conn)
+            save_chunks("/bc.py", [{"content": "gamma", "start_line": 1, "end_line": 1}], conn=conn)
+        stats = get_stats()
+        assert stats["total_files"] == 3
+        assert stats["total_chunks"] == 3
+
+    def test_embedding_stat_field_present(self):
+        from core.vector_store import get_stats, clear_index
+        stats = get_stats()
+        for key in ("total_files", "total_chunks", "files",
+                    "embedded_chunks", "embeddings_active", "embedding_model"):
+            assert key in stats
+
 
 # ── Session context tests ─────────────────────────────────────────────────────
 

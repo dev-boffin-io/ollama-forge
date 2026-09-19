@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-from core.vector_store import save_chunks, get_stats, clear_index
+from core.vector_store import save_chunks, get_stats, clear_index, embedding_status
 
 # ── Supported extensions ─────────────────────────────────────────────────────
 CODE_EXTENSIONS = {
@@ -47,6 +47,7 @@ SKIP_DIRS = {
 MAX_FILE_SIZE_KB = 500
 CHUNK_SIZE = 50         # lines per chunk (reduced for better granularity)
 CHUNK_OVERLAP = 8       # lines overlap between chunks
+COMMIT_EVERY = 100      # files between commits during a bulk index run
 
 # Patterns that signal a semantic boundary (start of function/class)
 _BOUNDARY_PATTERNS = [
@@ -105,53 +106,62 @@ def index_folder(folder: str) -> None:
     total_chunks = 0
     t0 = time.time()
 
-    # Try rich progress bar
-    try:
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-        from rich.console import Console
-        console = Console()
+    # One connection for the whole run, so we don't pay open/commit/close
+    # per file. Embeddings are cached process-wide by vector_store, so the
+    # first file pays for model discovery, the rest reuse it.
+    from core.vector_store import batch_connection
+    with batch_connection() as conn:
+        # Try rich progress bar
+        try:
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+            from rich.console import Console
+            console = Console()
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Indexing...", total=len(files))
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Indexing...", total=len(files))
 
+                for filepath in files:
+                    rel = os.path.relpath(filepath, folder)
+                    try:
+                        chunks = _chunk_file(filepath)
+                        if chunks:
+                            save_chunks(filepath, chunks, conn=conn)
+                            total_chunks += len(chunks)
+                            indexed += 1
+                            progress.update(task, advance=1, description=f"[cyan]{rel[:50]}")
+                        else:
+                            skipped += 1
+                            progress.update(task, advance=1)
+                    except Exception:
+                        skipped += 1
+                        progress.update(task, advance=1)
+                    if indexed and indexed % COMMIT_EVERY == 0:
+                        conn.commit()
+
+        except ImportError:
+            # Plain fallback
             for filepath in files:
                 rel = os.path.relpath(filepath, folder)
                 try:
                     chunks = _chunk_file(filepath)
                     if chunks:
-                        save_chunks(filepath, chunks)
+                        save_chunks(filepath, chunks, conn=conn)
                         total_chunks += len(chunks)
                         indexed += 1
-                        progress.update(task, advance=1, description=f"[cyan]{rel[:50]}")
+                        print(f"  ✓ {rel:<50} ({len(chunks)} chunks)")
                     else:
                         skipped += 1
-                        progress.update(task, advance=1)
                 except Exception as exc:
+                    print(f"  ✗ {rel:<50} (skip: {exc})")
                     skipped += 1
-                    progress.update(task, advance=1)
-
-    except ImportError:
-        # Plain fallback
-        for filepath in files:
-            rel = os.path.relpath(filepath, folder)
-            try:
-                chunks = _chunk_file(filepath)
-                if chunks:
-                    save_chunks(filepath, chunks)
-                    total_chunks += len(chunks)
-                    indexed += 1
-                    print(f"  ✓ {rel:<50} ({len(chunks)} chunks)")
-                else:
-                    skipped += 1
-            except Exception as exc:
-                print(f"  ✗ {rel:<50} (skip: {exc})")
-                skipped += 1
+                if indexed and indexed % COMMIT_EVERY == 0:
+                    conn.commit()
 
     elapsed = time.time() - t0
 
@@ -162,12 +172,28 @@ def index_folder(folder: str) -> None:
     except Exception:
         pass
 
+    # Embeddings sanity check: confirm real semantic embeddings are being
+    # used, or clearly say retrieval fell back to TF-IDF.
+    stats = get_stats()
+    active, model = embedding_status()
+    emb_line = ""
+    if stats["total_chunks"] and active:
+        emb_line = (
+            f"\n   Embeddings   : ✅ [{model}] ({stats['embedded_chunks']}/{stats['total_chunks']} chunks)"
+        )
+    else:
+        emb_line = (
+            "\n   Embeddings   : ⚠️  not available — using TF-IDF fallback\n"
+            "                  (run `ollama pull nomic-embed-text` for semantic search)"
+        )
+
     _print(f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Index complete!  ({elapsed:.1f}s)
    Files indexed : {indexed}
    Files skipped : {skipped}
    Total chunks  : {total_chunks}
+{emb_line}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Now ask anything:
