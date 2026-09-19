@@ -34,9 +34,14 @@ WIN_PROCESS_NAMES = ["ollama.exe", "ollama app.exe"]
 class ServerCheckWorker(QThread):
     result = pyqtSignal(bool)
 
+    def __init__(self, host: str = "http://localhost:11434",
+                 parent=None) -> None:
+        super().__init__(parent)
+        self._host = host
+
     def run(self) -> None:
         try:
-            r = requests.get("http://localhost:11434/api/tags", timeout=4)
+            r = requests.get(f"{self._host}/api/tags", timeout=4)
             self.result.emit(r.status_code == 200)
         except Exception:
             self.result.emit(False)

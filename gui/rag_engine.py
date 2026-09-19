@@ -107,7 +107,8 @@ def _is_ollama_model(name: str) -> bool:
     return ":" in name
 
 
-def _embed_ollama(texts: list[str], model: str) -> "np.ndarray":
+def _embed_ollama(texts: list[str], model: str,
+                  host: str | None = None) -> "np.ndarray":
     """
     Call Ollama embedding API.
     Tries /api/embed (>=0.3) first, then /api/embeddings fallback,
@@ -116,7 +117,8 @@ def _embed_ollama(texts: list[str], model: str) -> "np.ndarray":
     import numpy as np
     import requests
 
-    BASE = "http://localhost:11434"
+    BASE = (host or os.environ.get("OLLAMA_HOST")
+            or "http://localhost:11434").rstrip("/")
 
     # ── Try new /api/embed (batch) ───────────────────────────────────
     try:
@@ -220,10 +222,11 @@ def _embed_st(texts: list[str], model: str) -> "np.ndarray":
         return _embed_hash_tfidf(texts)
 
 
-def _embed(texts: list[str], model_name: str) -> "np.ndarray":
+def _embed(texts: list[str], model_name: str,
+           host: str | None = None) -> "np.ndarray":
     """Route to Ollama or sentence-transformers based on model name."""
     if _is_ollama_model(model_name):
-        return _embed_ollama(texts, model_name)
+        return _embed_ollama(texts, model_name, host=host)
     return _embed_st(texts, model_name)
 
 
@@ -234,8 +237,12 @@ class RAGIndex:
     META_FILE = os.path.join(_PERSIST, "meta.json")
     INDEX_FILE = os.path.join(_PERSIST, "index.faiss")
 
-    def __init__(self, embed_model: str = "all-MiniLM-L6-v2"):
+    def __init__(self, embed_model: str = "all-MiniLM-L6-v2",
+                 host: str | None = None):
         self.embed_model = embed_model
+        # host is the Ollama HTTP base URL — local, SSH port-forward, or tunnel.
+        self.host = (host or os.environ.get("OLLAMA_HOST")
+                     or "http://localhost:11434").rstrip("/")
         self._index = None       # faiss index
         self._chunks: list[dict] = []   # [{text, source, hash}]
         self._embed_dim: int | None = None
@@ -347,7 +354,8 @@ class RAGIndex:
                 break
             batch = new_chunks[i: i + batch_size]
             try:
-                vecs = _embed([c["text"] for c in batch], self.embed_model)
+                vecs = _embed([c["text"] for c in batch], self.embed_model,
+                              host=self.host)
                 all_vecs.append(vecs)
                 good_chunks.extend(batch)
             except Exception as e:
@@ -382,7 +390,7 @@ class RAGIndex:
         if self._index is None or not self._chunks:
             return []
         import numpy as np
-        qvec = _embed([query], self.embed_model).astype("float32")
+        qvec = _embed([query], self.embed_model, host=self.host).astype("float32")
         # Guard: dimension must match index — mismatch happens when embed
         # backend changes (e.g. Ollama off → hash TF-IDF fallback)
         idx_dim = self._index.d
@@ -415,7 +423,7 @@ class RAGIndex:
             self._index = None
         else:
             texts = [c["text"] for c in keep]
-            vecs = _embed(texts, self.embed_model).astype("float32")
+            vecs = _embed(texts, self.embed_model, host=self.host).astype("float32")
             dim = vecs.shape[1]
             self._index = faiss.IndexFlatIP(dim)
             self._index.add(vecs)

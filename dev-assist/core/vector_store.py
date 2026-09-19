@@ -20,6 +20,56 @@ EMBEDDING_MODEL = "nomic-embed-text"
 _CHUNK_COMMIT_EVERY = 100  # files between commits during a bulk index run
 
 _embedding_model_cache: dict = {"checked": False, "model": None}
+_host_cache: dict = {"host": None}
+
+# Default Ollama HTTP base URL. The CLI resolves its own host — fully
+# independent from the GUI (which has its own ~/.ollama_gui/settings.json).
+OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+
+
+def _config_ollama_base_url() -> str:
+    """Ollama base_url from THIS app's own config/settings.json (CLI only)."""
+    try:
+        from core.config import load_config
+        cfg = load_config()
+        if hasattr(cfg, "get_provider"):
+            prof = cfg.get_provider("ollama")
+            return (getattr(prof, "base_url", "") or "").strip()
+        prof = (cfg or {}).get("providers", {}).get("ollama", {}) or {}
+        return (prof.get("base_url") or "").strip()
+    except Exception:
+        return ""
+
+
+def _resolve_ollama_host() -> str:
+    """
+    Ollama HTTP host used for embeddings, resolved once per process.
+
+    Priority (highest → lowest, all CLI-side; nothing shared with the GUI):
+      1. DEV_ASSIST_OLLAMA_HOST env var      — explicit per-session override
+      2. providers.ollama.base_url in this app's config/settings.json
+      3. OLLAMA_HOST env var                 — standard ollama client behaviour
+    """
+    if _host_cache["host"]:
+        return _host_cache["host"]
+
+    host = os.environ.get("DEV_ASSIST_OLLAMA_HOST") or ""
+    if not host:
+        host = _config_ollama_base_url()
+        if host and host.rstrip("/") == OLLAMA_DEFAULT_HOST:
+            host = ""   # untouched catalog default — let OLLAMA_HOST apply
+        if not host:
+            host = os.environ.get("OLLAMA_HOST") or ""
+
+    host = (host or OLLAMA_DEFAULT_HOST).strip().rstrip("/")
+    _host_cache["host"] = host
+    return host
+
+
+def _ollama_client():
+    """Ollama client pointed at the resolved CLI host."""
+    import ollama
+    return ollama.Client(host=_resolve_ollama_host())
 
 
 def _get_db() -> sqlite3.Connection:
@@ -93,9 +143,9 @@ def _available_embedding_model() -> str | None:
 
     model: str | None = None
     try:
-        import ollama
+        client = _ollama_client()
         # list() raises if the server isn't running — that's a fallback signal.
-        models = ollama.list()
+        models = client.list()
         names = set()
         if isinstance(models, dict):
             for m in models.get("models", []):
@@ -119,8 +169,8 @@ def _embed_text(text: str) -> list[float] | None:
     if not model or not text.strip():
         return None
     try:
-        import ollama
-        resp = ollama.embeddings(model=model, prompt=text)
+        client = _ollama_client()
+        resp = client.embeddings(model=model, prompt=text)
         embedding = resp.get("embedding") if isinstance(resp, dict) else getattr(resp, "embedding", None)
         if not embedding:
             return None
