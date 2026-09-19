@@ -35,6 +35,7 @@ def _print(msg: str) -> None:
 _TOOL_ICONS = {
     "read_file": "📖", "list_dir": "📁", "glob": "🔍", "grep": "🔎",
     "write_file": "📝", "edit_file": "✏️", "bash": "⚙️",
+    "run_tests": "🧪", "web_search": "🌐",
 }
 
 
@@ -226,23 +227,35 @@ def undo(_text: str = "") -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────
+_FLAG_RULES = (
+    (r"\s--auto\b|\s--yolo\b", "auto"),
+    (r"\s--yes\b|\s-y\b", "auto_yes"),
+    (r"\s--verbose\b|\s-v\b", "verbose"),
+)
+
+
+def _parse_run_args(text: str) -> tuple[str, dict]:
+    """Strip agent-mode flags from the raw user line.
+
+    Returns (task, flags) with flags = {"auto", "auto_yes", "verbose"}.
+    """
+    flags = {"auto": False, "auto_yes": False, "verbose": False}
+    for pattern, key in _FLAG_RULES:
+        if re.search(pattern, text):
+            flags[key] = True
+            text = re.sub(pattern, "", text).strip()
+    return text, flags
+
+
 def run(text: str) -> None:
     """Router entry point. `text` is the raw user line."""
-    task = re.sub(r"^\s*(do|agent)\b[:\s]*", "", text, flags=re.I).strip()
-
-    auto_yes = False
-    if re.search(r"\s--yes\b|\s-y\b", task):
-        auto_yes = True
-        task = re.sub(r"\s--yes\b|\s-y\b", "", task).strip()
-
-    verbose = False
-    if re.search(r"\s--verbose\b|\s-v\b", task):
-        verbose = True
-        task = re.sub(r"\s--verbose\b|\s-v\b", "", task).strip()
+    task, flags = _parse_run_args(text)
+    task = re.sub(r"^\s*(do|agent)\b[:\s]*", "", task, flags=re.I).strip()
 
     if not task:
         _print("[yellow]Usage:[/yellow] do <task>    e.g. [dim]do fix the failing test in tests/[/dim]")
-        _print("[dim]Flags: --yes (skip approval prompts), --verbose (show tool output)[/dim]")
+        _print("[dim]Flags: --auto/--yolo (run with no approval, tracked for undo), "
+               "--yes (approve prompts automatically), --verbose (show tool output)[/dim]")
         _print("[dim]After a run: 'undo' reverts every file it changed.[/dim]")
         return
 
@@ -258,14 +271,34 @@ def run(text: str) -> None:
     from core.change_tracker import get_tracker
     from core import tui_status
 
-    approver = make_approver(workdir, auto_yes=auto_yes)
+    if flags["auto"]:
+        # Fully autonomous: skip the interactive Approver entirely and use the
+        # "approve everything" policy. Changes are still snapshotted by the
+        # change tracker, so `undo` works exactly as it always has.
+        from core.agent import approve_everything
+        if _console:
+            _console.print(Panel(
+                "[red]Running WITHOUT approval prompts.[/red]\n"
+                "The agent may run any command and modify any file without asking.\n"
+                "Every change is snapshotted — you can type [bold]undo[/bold] "
+                "afterwards to revert them all.",
+                title="⚠ Auto mode", border_style="red",
+            ))
+        else:
+            _print("[warning] Running WITHOUT approval prompts (--auto).\n"
+                   "The agent may run any command and modify any file without "
+                   "asking. Every change is snapshotted — you can type 'undo' "
+                   "afterwards to revert them all.")
+        approver = approve_everything
+    else:
+        approver = make_approver(workdir, auto_yes=flags["auto_yes"])
 
     try:
         run_agent(
             task,
             workdir=workdir,
             approver=approver,
-            on_event=_make_renderer(verbose),
+            on_event=_make_renderer(flags["verbose"]),
         )
     except KeyboardInterrupt:
         _print("\n[yellow]Interrupted.[/yellow]")
