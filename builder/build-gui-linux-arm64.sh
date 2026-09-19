@@ -128,6 +128,7 @@ HIDDEN=(
     --hidden-import docx
     --hidden-import docx.oxml
     --hidden-import requests
+    --hidden-import packaging
     --hidden-import urllib.request
     --hidden-import pty
     --hidden-import tty
@@ -141,6 +142,12 @@ HIDDEN=(
     --hidden-import ollama_manager.workers
     --hidden-import ollama_manager.helpers
 )
+
+# Module names only (for warn-file validation below)
+HIDDEN_NAMES=()
+for _h in "${HIDDEN[@]}"; do
+    HIDDEN_NAMES+=("${_h#--hidden-import }")
+done
 
 EXCLUDED=(
     --exclude-module torch
@@ -158,6 +165,29 @@ EXCLUDED=(
     --exclude-module _tkinter
 )
 
+# ── Post-build validation ─────────────────────────────────────────────────
+# PyInstaller silently *warns* and skips a hidden import if the module isn't
+# installed in the build venv — the binary still builds, then dies at runtime
+# with ModuleNotFoundError. Fail loudly instead: scan warn-*.txt for any of
+# our declared hidden imports reported as missing.
+check_pyinstaller_warnings() {
+    local name="$1"
+    local warn_file="$GUI_DIR/build/$name/warn-$name.txt"
+    [[ -f "$warn_file" ]] || { warn "No PyInstaller warn file for $name ($warn_file)"; return 0; }
+    local missing=() mod
+    for mod in "${HIDDEN_NAMES[@]}"; do
+        if grep -qE "missing module named ${mod}([ .,]|$)" "$warn_file"; then
+            missing+=("$mod")
+        fi
+    done
+    if (( ${#missing[@]} )); then
+        echo -e "${RED}[✗]${NC} $name is missing required modules: ${missing[*]}"
+        grep -E "missing module named (${missing[*]// /|})([ .,]|$)" "$warn_file" | head -20
+        die "$name is missing bundled modules — fix the build venv installs and rebuild"
+    fi
+    ok "All hidden imports bundled correctly ($name)"
+}
+
 info "Building Ollama-ai-gui (ARM64)..."
 cd "$GUI_DIR"
 "$PYINSTALLER_BIN" \
@@ -169,6 +199,8 @@ cd "$GUI_DIR"
     "${EXCLUDED[@]}" \
     main.py
 
+check_pyinstaller_warnings Ollama-ai-gui-arm64
+
 info "Building Ollama-ai-manager (ARM64)..."
 "$PYINSTALLER_BIN" \
     --onefile \
@@ -178,6 +210,8 @@ info "Building Ollama-ai-manager (ARM64)..."
     "${HIDDEN[@]}" \
     "${EXCLUDED[@]}" \
     manager_entry.py
+
+check_pyinstaller_warnings Ollama-ai-manager-arm64
 
 for name in Ollama-ai-gui-arm64 Ollama-ai-manager-arm64; do
     [[ -f "$GUI_DIR/dist/$name" ]] || die "Build failed — $name not found"

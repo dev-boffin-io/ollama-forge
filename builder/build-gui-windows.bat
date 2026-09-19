@@ -81,6 +81,7 @@ set HIDDEN=^
     --hidden-import docx ^
     --hidden-import docx.oxml ^
     --hidden-import requests ^
+    --hidden-import packaging ^
     --hidden-import urllib.request ^
     --hidden-import threading ^
     --hidden-import tempfile ^
@@ -89,6 +90,8 @@ set HIDDEN=^
     --hidden-import ollama_manager.window ^
     --hidden-import ollama_manager.workers ^
     --hidden-import ollama_manager.helpers
+
+set HIDDEN_MODULES=numpy faiss pypdf pypdf._reader docx docx.oxml requests packaging urllib.request threading tempfile shutil ollama_manager ollama_manager.window ollama_manager.workers ollama_manager.helpers
 
 set EXCLUDED=^
     --exclude-module torch ^
@@ -105,6 +108,27 @@ set EXCLUDED=^
     --exclude-module tkinter ^
     --exclude-module _tkinter
 
+REM ── Post-build validation ───────────────────────────────────────────────
+REM PyInstaller silently warns + skips a hidden import if it isn't installed
+REM in the build venv; binary still builds then dies at runtime with
+REM ModuleNotFoundError. Fail loudly instead by scanning warn-*.txt.
+:check_warn
+set "WARN_FILE=%GUI_DIR%\build\%~1\warn-%~1.txt"
+if not exist "%WARN_FILE%" (
+    echo [→] No PyInstaller warn file for %~1: %WARN_FILE%
+    goto :eof
+)
+for %%M in (%HIDDEN_MODULES%) do (
+    findstr /i /c:"missing module named %%M" "%WARN_FILE%" >nul
+    if not errorlevel 1 (
+        echo [ERROR] %~1 is missing required module: %%M
+        findstr /i /c:"missing module named %%M" "%WARN_FILE%"
+        exit /b 1
+    )
+)
+echo [✓] All hidden imports bundled correctly: %~1
+goto :eof
+
 REM ── Build Ollama-ai-gui.exe ─────────────────────────────────────────────
 echo [→] Building Ollama-ai-gui.exe...
 cd /d "%GUI_DIR%"
@@ -117,6 +141,7 @@ cd /d "%GUI_DIR%"
     %EXCLUDED% ^
     main.py
 if errorlevel 1 ( echo [ERROR] Ollama-ai-gui build failed & exit /b 1 )
+call :check_warn Ollama-ai-gui
 
 REM ── Build Ollama-ai-manager.exe ─────────────────────────────────────────
 echo [→] Building Ollama-ai-manager.exe...
@@ -129,6 +154,7 @@ echo [→] Building Ollama-ai-manager.exe...
     %EXCLUDED% ^
     manager_entry.py
 if errorlevel 1 ( echo [ERROR] Ollama-ai-manager build failed & exit /b 1 )
+call :check_warn Ollama-ai-manager
 
 REM ── Move binaries ───────────────────────────────────────────────────────
 for %%N in (Ollama-ai-gui Ollama-ai-manager) do (
