@@ -22,15 +22,15 @@
 
 ## Overview
 
-**ollama-forge** is a privacy-first, offline-first suite of three tightly integrated tools for running, managing, and working with local AI models on Linux. All compute stays on your machine — no cloud API calls, no telemetry, no data leaving your network.
+**ollama-forge** is a privacy-first, offline-first suite of three tightly integrated tools for running, managing, and working with local AI models on Linux. With **Ollama local inference** (the default everywhere) all compute stays on your machine — no telemetry, no data leaving your network. Optional cloud providers (OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom endpoints) can be switched in at runtime when you want them.
 
 The suite ships as standalone **PyInstaller single-file binaries** with no Python runtime or virtual environment required at deployment time.
 
 | Component | Binary | Role |
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
-| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with multi-model support, FAISS RAG, Groq API backend, vision models, file/ZIP attachments, markdown rendering, and crew multi-agent mode |
-| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, shell execution, git helpers, tunnel management, and multi-provider AI |
+| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with 8 AI providers (Ollama, OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom), FAISS RAG, vision models, file/ZIP attachments, markdown rendering, notes panel, persistent long-term memory, and crew multi-agent mode |
+| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, an agent mode that reads/edits files and runs commands (`do <task>`), shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
 
@@ -100,16 +100,20 @@ ollama-main uninstall   # Stop service, disable systemd unit, remove all paths
 
 ## Ollama GUI
 
-`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt6**. It communicates with a locally running Ollama server via its REST API or the Groq cloud API, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without LangChain.
+`Ollama-ai-gui` is a full-featured desktop chat application built with **PyQt6**. It talks to a locally running Ollama server via its REST API or to any of eight cloud/local AI providers, stores all conversation history in a local SQLite database, and provides a FAISS-backed RAG system for document-grounded answers — all without LangChain.
 
-### API Mode Toggle — Local vs Groq
+### Provider Selector — 8 AI Providers
 
-The GUI supports two backend modes switchable at runtime via the **Local / Groq API** toggle button in the toolbar:
+A provider combo box in the toolbar switches the backend at runtime between **Ollama** (local) and seven remote providers: **OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure OpenAI, and any custom OpenAI-compatible endpoint**:
 
-- **Local mode (default):** Sends all inference requests to a locally running `ollama serve` instance. The server status button, Ollama Manager, and all model management features are active.
-- **Groq API mode:** Routes chat requests to [Groq](https://groq.com) via `groq_client.py` using the OpenAI-compatible endpoint. Enter and save your Groq API key (stored to `~/.ollama_gui/settings.json`; clearable via the 🗑 Clear button). Server controls and the Ollama Manager button are hidden in this mode. Supported models include Llama 4, Llama 3.x, Mixtral, Gemma, DeepSeek-R1, and vision-capable variants.
+- **Ollama (default):** All requests go to a locally running `ollama serve` instance. The server status button, Ollama Manager, and all model management features are active.
+- **Remote providers:** Requests are routed via `providers.py` — an OpenAI-compatible `/chat/completions` client for OpenAI/Groq/OpenRouter/Mistral/Azure/custom, and the Anthropic Messages API for Anthropic. A **🔑 API key row** appears when the active provider requires one: keys are read from that provider's environment variable (`GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) or an explicit field, and persist to `~/.ollama_gui/settings.json` (clearable via the 🗑 Clear button). Ollama-specific controls, the server button, and the Ollama Manager are hidden/dimmed in remote-provider mode.
 
-Switching modes is instant and non-destructive — conversation history and RAG state are preserved across mode switches.
+Switching providers is instant and non-destructive — conversation history and RAG state are preserved. Vision and embedding capabilities are auto-detected per provider (see [Vision Models](#vision-models)).
+
+### Persistent Memory
+
+The **💬 Session / 🧠 Persistent** button toggles long-term memory. In session mode each chat starts fresh; in persistent mode the GUI injects user-remembered facts (stored in the SQLite `memories` table, upserted by key) as a system-prompt prefix on every message, so the assistant keeps context across conversations. The toggle state persists across restarts.
 
 ### Hamburger Menu (☰)
 
@@ -117,7 +121,9 @@ The `☰` button opens a slide-out drawer panel containing:
 
 - **Knowledge (RAG)** — attach files and folders for document-grounded answers.
 - **Crews** — create and manage multi-agent pipelines.
-- **Ollama Manager** — launch the Ollama Manager window *(visible only in Local mode; hidden in Groq API mode; disabled/dimmed when the server is OFF)*.
+- **📝 Notes** — personal note panel: create, edit, search, and send notes into the chat as a message (`notes_dialog.py`).
+- **🧠 Long-term Memory** — browse and delete saved memory facts (persistent mode).
+- **Ollama Manager** — launch the Ollama Manager window *(visible only in Ollama mode; hidden in remote-provider mode; disabled/dimmed when the server is OFF)*.
 
 ### Chat Navigation Popup
 
@@ -125,7 +131,7 @@ The conversation title button in the top bar opens a **popup chat list** (`Qt.Po
 
 ### Theme
 
-A **Dark / Light theme toggle** (🌙 / ☀️) button switches the entire UI stylesheet at runtime. The selected theme is persisted to `~/.ollama_gui/settings.json` alongside the Groq API key and last-used model, all of which are restored automatically on next launch.
+A **Dark / Light theme toggle** (🌙 / ☀️) button switches the entire UI stylesheet at runtime. The selected theme is persisted to `~/.ollama_gui/settings.json` alongside the active provider, its API key, the last-used model, and the persistent-memory toggle — all restored automatically on next launch.
 
 ### Chat Rendering — `chat_renderer.py`
 
@@ -150,10 +156,10 @@ Up to 30 files are processed per ZIP. The active ZIP session persists across mul
 
 ### Vision Models
 
-When images are attached, `SmartChatWorker` auto-selects a vision-capable model:
+When images are attached, `SmartChatWorker` auto-selects a vision-capable model for the active provider:
 
-- **Local mode:** Detects vision models from the Ollama model list by name keywords (`llava`, `vision`, `moondream`, `phi3-v`, `minicpm-v`). Falls back gracefully with a warning if no vision model is available.
-- **Groq mode:** Vision-capable Groq models (`llama-4-scout`, `llama-4-maverick`, `llama-3.2-*-vision-preview`) are flagged in `groq_client.py` and selected automatically.
+- **Ollama mode:** Detects vision models from the live Ollama model list (via `/api/show` capabilities) with keyword fallbacks (`llava`, `vision`, `moondream`, `phi3-v`, `minicpm-v`). Falls back gracefully with a warning if no vision model is available.
+- **Remote providers:** Vision-capable models are identified and selected automatically. Providers whose models are all vision-capable (`vision_all`) accept images directly; others use per-model keyword hints. Remote images are sent in OpenAI-compatible `image_url` content parts (translated to `image` blocks by the Anthropic adapter), while Ollama uses the native `images` field.
 
 ### Code Execution — `code_runner.py`
 
@@ -165,19 +171,23 @@ The GUI is split into focused modules, each with a single responsibility:
 
 ```
 gui/
-├── main.py                 Main window — layout, mode toggle, theme, chat popup
+├── main.py                 Main window — layout, provider selector, theme, chat popup
+├── providers.py            Multi-provider catalog + REST clients (mirrors dev-assist/core/providers.py)
 ├── ollama_client.py        Ollama REST API client (streaming chat, model list, embed)
 ├── groq_client.py          Groq API client — streaming chat, model list, vision detection
 ├── chat_renderer.py        Markdown → styled HTML renderer for QTextBrowser
 ├── attachment_handler.py   Universal file processor — images, code, zip project context
 ├── code_runner.py          Fenced code block executor (15+ languages, subprocess)
-├── database.py             SQLite store — conversations, messages, crews
+├── database.py             SQLite store — conversations, messages, crews, memories, notes
 ├── rag_engine.py           FAISS RAG — document loading, chunking, embedding, search
 ├── workers.py              QThread workers — DirectChat, CrewChat, RAGBuild,
 │                           GroqChatWorker, SmartChatWorker, CodeRunWorker
 ├── crew_dialogs.py         Crew configuration dialog + built-in templates
-├── ollama_manager.py       Ollama install/upgrade/uninstall + model manager
-└── _syspath_patch.py       PyInstaller frozen binary sys.path fix
+├── notes_dialog.py         Notes panel — create, edit, search, send to chat
+├── manager_entry.py        Ollama-ai-manager binary entry point
+├── ollama_manager/         Ollama Manager window — helpers, window, workers
+├── _syspath_patch.py       PyInstaller frozen binary sys.path fix
+└── requirements.txt
 ```
 
 All blocking operations — AI inference, document indexing, service polling — run in **QThread workers** and communicate back to the main thread exclusively through `pyqtSignal`. The UI never blocks.
@@ -261,14 +271,14 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 
 - Before any privileged operation (install / upgrade / uninstall), a **sudo password dialog** prompts the user. Root users bypass it automatically.
 - The entire `install.sh` runs as root via `sudo -kS sh -c "curl -fsSL https://ollama.com/install.sh | sh"` — password passed once via stdin so all internal `sudo` calls inside the script inherit root context without re-prompting.
-- The Ollama Manager button is disabled (dimmed) when the server is OFF, and hidden entirely in Groq API mode.
+- The Ollama Manager button is disabled (dimmed) when the server is OFF, and hidden entirely in remote-provider mode.
 
 **Authentication:** Reads `~/.ollama/config` and `~/.config/ollama/config` to detect a logged-in username. Supports login and logout via `ollama login` / `ollama logout` subprocess calls with credential entry fields in the UI.
 
 ### Window and Theme
 
 - Default window size **1800 × 900**
-- Base font size **28 px UI / 26 px monospace** — optimised for high-DPI displays and accessibility
+- Base font sizes **32 px UI / 44 px chat / 40 px input** — optimised for high-DPI displays and accessibility
 - **Dark / Light theme toggle** — switches the entire Qt stylesheet at runtime; preference persisted to `~/.ollama_gui/settings.json`
 - Full-width chat layout — no fixed left panel; conversation list accessed via the title popup button
 - All interactive controls have `setMinimumHeight(60–64 px)` for comfortable use with trackpads and touch
@@ -279,13 +289,13 @@ The `CrewConfigDialog` presents a scrollable list of agent cards. Each card expo
 | Package | Role |
 |---------|------|
 | `PyQt6 >= 6.6` | GUI framework |
-| `requests >= 2.28` | Ollama REST API, Groq API, GitHub version check |
+| `requests >= 2.28` | Ollama REST API, remote provider APIs, GitHub version check |
 | `sentence-transformers >= 2.6` | Optional embedding backend (falls back to hashed TF-IDF when unavailable) |
 | `faiss-cpu >= 1.7` | Vector index for RAG |
 | `pypdf >= 3.0` | PDF document loading |
 | `python-docx >= 1.0` | DOCX document loading |
 
-> **Groq API** requires no additional package — uses `requests` directly. Get a free key at [console.groq.com](https://console.groq.com).
+> **Remote providers** (OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom) require no additional packages — `providers.py` uses `requests` directly. Get a free key at [console.groq.com](https://console.groq.com), [platform.openai.com](https://platform.openai.com), or your provider of choice.
 
 ---
 
@@ -308,6 +318,14 @@ da --web --port 8080
 ⚡ dev-assist > ~$ !git log --oneline -10
 ⚡ dev-assist > ~$ !docker ps -a
 ⚡ dev-assist > ~$ !htop
+
+# Agent mode — the agent reads/edits files and runs commands for you
+⚡ dev-assist > ~$ do fix the failing test in tests/
+⚡ dev-assist > ~$ agent add rate limiting to the API client
+⚡ dev-assist > ~$ do refactor core/session.py --verbose   # show full tool output
+⚡ dev-assist > ~$ do cleanup build artifacts --yes         # auto-approve prompts
+⚡ dev-assist > ~$ do bump the version everywhere --auto    # no approval prompts
+⚡ dev-assist > ~$ undo                                     # revert the last run's changes
 
 # Indexing and RAG
 ⚡ dev-assist > ~$ index .                    # Index current project
@@ -337,21 +355,31 @@ da --web --port 8080
 
 ```
 dev-assist/
-├── main.py                 CLI entry point — argument parsing, REPL loop
+├── main.py                 CLI entry point — argument parsing, REPL loop, TUI toolbar
 ├── web_app.py              FastAPI web UI — async streaming handlers
 ├── webui/                  Plain HTML/CSS/JS frontend (no build step)
 ├── core/
-│   ├── ai.py               AI engine — Ollama (sync + async) and API backends
+│   ├── ai.py               AI engine — provider-agnostic front-end over core.providers
+│   ├── providers.py        Multi-provider catalog — Ollama, OpenAI, Anthropic, Groq,
+│   │                       OpenRouter, Mistral, Azure, custom (mirrors gui/providers.py)
+│   ├── agent.py            Tool-calling agent loop — planning, sub-tasks, approval
+│   ├── tools.py            JSON-Schema tool registry + execution (read/edit/bash/tests/search)
+│   ├── repo_map.py         Compact project map — file tree + top-level signatures
+│   ├── change_tracker.py   Snapshot + undo for agent-made file edits
+│   ├── tui_status.py       Persistent bottom-toolbar state (activity + Ollama status)
 │   ├── config.py           Pydantic-validated config with env var overrides
 │   ├── prompts.py          Jinja2 prompt template engine with built-in fallback
 │   ├── rag_engine.py       RAG orchestrator — retrieval, re-ranking, prompt build
 │   ├── router.py           Intent detection — regex dispatch to modules
 │   ├── session.py          In-memory conversation context — history, cwd, model
 │   ├── shell.py            Subprocess helpers — run_git, RunResult
-│   ├── vector_store.py     FAISS/TF-IDF vector store with hybrid scoring
+│   ├── vector_store.py     SQLite embedding store (Ollama /api/embed + TF-IDF fallback)
+│   ├── cli_history.py      Persistent CLI history saved to the data directory
+│   ├── attachment_handler.py  Image/text upload processor for the web UI
 │   ├── ollama_status.py    Ollama health check and model list helpers
 │   └── banner.py           Rich-formatted startup banner
 ├── modules/
+│   ├── agent_mode.py       Agent CLI front-end — plan panels, diff previews, undo
 │   ├── shell_exec.py       Interactive shell passthrough with session cwd tracking
 │   ├── git_helper.py       AI-assisted git conflict/push/pull/rebase helpers
 │   ├── code_audit.py       Staged diff audit via AI review prompt
@@ -363,44 +391,47 @@ dev-assist/
 │   ├── makefile.py         Makefile target runner plugin
 │   └── telegram.py         Telegram bot integration plugin
 ├── config/
-│   └── settings.json       Persistent config (AI engine, model, preferences)
+│   └── settings.json       Persistent config (active provider, models, preferences)
+├── data/index.db           SQLite embedding store for project-code RAG
 └── tests/
+    ├── test_agent.py        Agent loop, planning, approval, tool dispatch
+    ├── test_agent_mode.py   agent-mode flag parsing and undo flow
+    ├── test_providers.py    Provider catalog, key resolution, adapters
     ├── test_rag.py          RAG engine and vector store tests
+    ├── test_repo_map.py     Repo-map building and similarity fallback
     ├── test_router.py       Intent routing tests
+    ├── test_tools.py        Tool registry and execution
     └── test_shell.py        Shell execution tests
 ```
 
 ### AI Engine
 
-The AI engine (`core/ai.py`) supports **two backend modes** configured via `config/settings.json` or environment variables, with full support for both synchronous CLI and asynchronous streaming web UI modes.
+The AI engine (`core/ai.py`) is a provider-agnostic front-end over **`core/providers.py`**, an eight-provider catalog: **Ollama, OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure OpenAI, and custom OpenAI-compatible endpoints**. All providers share the same interface (`list_models()`, `validate()`, `chat()`, `stream()`), so sync CLI, async web streaming, RAG, and agent mode work identically regardless of backend. The active provider and model are switched at runtime from the REPL (`model provider <id>`, `model set <name>`, `model list`).
 
-#### Ollama (default — fully local)
+Providers are grouped into **three transport dialects**, hidden behind the adapters:
 
-```json
-{ "ai_engine": "ollama", "ollama_model": "qwen2.5-coder:7b" }
-```
+- **`ollama`** — the local Ollama server via the python `ollama` client (`http://localhost:11434`).
+- **`openai_compat`** — OpenAI-style `/chat/completions` REST for OpenAI, Groq, OpenRouter, Mistral, Azure OpenAI, and any OpenAI-compatible local server (vLLM, LM Studio, Ollama's OpenAI layer, …).
+- **`anthropic`** — the Anthropic Messages API (`tool_use`/`tool_result` blocks are converted to the same normalized message shape as the other dialects).
 
-**Multi-turn conversation:** When session history exists, the engine uses `ollama.chat()` with the full history serialised as `[{"role": "user"/"assistant", "content": "..."}]` messages, giving the model genuine multi-turn context. Single-turn `ollama.generate()` is used as a fallback when no history is present.
-
-**Streaming — CLI:** `ask_ai()` prints tokens to stdout as they arrive using the synchronous Ollama streaming generator. The `capture_output=True` flag also collects and returns the full response string for use by modules that need the AI output programmatically (e.g. git helper, code audit).
-
-**Streaming — web UI:** `ask_ai_streaming()` is an async generator that uses `asyncio.get_running_loop().run_in_executor()` to bridge the synchronous Ollama SDK into FastAPI's async event loop without blocking it, streamed to the browser over Server-Sent Events.
-
-#### API backend (Groq / OpenAI-compatible)
+**API keys are never required up front.** They are resolved lazily from environment variables at request time (`GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, … or the catch-all `DEV_ASSIST_API_KEY`) and are never written to `settings.json`.
 
 ```json
 {
-  "ai_engine": "api",
-  "api_engine": {
-    "api_url": "https://api.groq.com/openai/v1/chat/completions",
-    "api_model": "llama3-70b-8192"
+  "active_provider": "ollama",
+  "providers": {
+    "ollama":  { "default_model": "qwen2.5-coder:7b" },
+    "groq":    { "default_model": "llama3-70b-8192" },
+    "openai":  { "default_model": "gpt-4o-mini" }
   }
 }
 ```
 
-Uses only `urllib.request` — zero additional HTTP dependencies beyond the standard library. The API key is loaded exclusively from the `DEV_ASSIST_API_KEY` environment variable and never stored in config files. Supports any OpenAI-compatible endpoint: Groq, OpenAI, local vLLM, LM Studio, Ollama's OpenAI-compat layer, etc.
+**Multi-turn conversation:** when session history exists, the engine sends the full history as messages through the active provider's `stream()` (or `chat()`), giving the model genuine multi-turn context. The `capture_output=True` flag on `ask_ai()` also collects and returns the full response string for use by modules that need the output programmatically (e.g. git helper, code audit).
 
-Preconfigured model choices: `llama3-70b-8192`, `llama3-8b-8192`, `mixtral-8x7b-32768`, `gemma2-9b-it`.
+**Streaming — CLI:** `ask_ai()` prints tokens to stdout as they arrive using the provider's synchronous streaming generator.
+
+**Streaming — web UI:** `ask_ai_streaming()` is an async generator that bridges the synchronous provider stream into FastAPI's async event loop without blocking it, streamed to the browser over Server-Sent Events.
 
 ### Pydantic Configuration
 
@@ -419,6 +450,29 @@ The `ApiEngineConfig` and top-level `AppConfig` models validate all fields on lo
 When Pydantic is not installed, the config module gracefully degrades to raw JSON loading with manual fallbacks, keeping the tool functional in minimal environments (e.g. proot-Termux without build tools).
 
 Path resolution for the config file handles both normal dev usage (repo-relative `config/settings.json`) and PyInstaller frozen binary mode (via `DEV_ASSIST_CONFIG_DIR` environment variable injected by the runtime hook at startup).
+
+### Agent Mode
+
+`core/agent.py` implements a **tool-calling agent loop** with multi-step planning — the model acts on your project instead of just answering. Invoked from the `modules/agent_mode.py` CLI front-end via **`do <task>`**, **`agent <task>`**, and **`undo`** in the REPL.
+
+**Planning:** before doing anything, the agent asks the model to split the task into 2–5 concrete sub-tasks (a plan). Each sub-task runs its own tool loop with its own step budget (default 24 steps, with a hard 120-step safety cap across the whole run), carrying prior sub-task results forward as context. A final combined answer summarizes the whole run.
+
+**Tools:** a JSON-Schema tool registry (`core/tools.py`) that works across every provider — Ollama native tool calling, OpenAI-compatible chat completions, and the Anthropic Messages API. Read-only tools (`read_file`, `list_dir`, `glob`, `grep`) run freely; destructive tools (`write_file`, `edit_file`, `bash`) are gated behind an approval callback. `run_tests` and `web_search` round out the registry:
+
+| Tool | Purpose |
+|------|---------|
+| `read_file` / `list_dir` | Read files / list directories (line-numbered output) |
+| `glob` / `grep` | Find files by pattern / search contents by regex |
+| `write_file` / `edit_file` | Create/overwrite files / exact-string in-place edits |
+| `bash` | Run shell commands (builds, tests, git) |
+| `run_tests` | Auto-detect and run the test suite (pytest, unittest, npm test, go test, cargo test, make test) |
+| `web_search` | Keyless DuckDuckGo HTML search (or a configured search API) |
+
+**Repo map:** before planning, `core/repo_map.py` injects a compact project map — the file tree plus top-level function/class signatures (structure only, never full code) — into the agent's prompts. For large projects the map is narrowed by the vector store's similarity search to files relevant to the task, and re-narrowed per sub-task.
+
+**Approval:** destructive tools are gated behind an approval callback. The REPL front-end shows **real unified diff previews** (computed against the actual file contents) and asks `approve? [y]es / [n]o / [a]lways` before running anything destructive. Declined calls feed the user's reason (if any) back to the model so it can adapt. Flags: `--yes` auto-approves prompts, `--auto`/`--yolo` skips approval entirely while still tracking changes for undo, `--verbose` shows full tool output.
+
+**Change tracking & undo:** every `write_file`/`edit_file` in a run is snapshotted before it happens (`core/change_tracker.py`). When the run finishes you get a diffstat (`+N -M files changed`) and can type **`undo`** to revert every touched file — including deleting files the agent created. Trackers are kept across calls in one REPL session, and the activity line is mirrored into the persistent bottom toolbar (`core/tui_status.py`) so you always see live agent activity even while the REPL is idle.
 
 ### Semantic Code RAG
 
@@ -447,15 +501,15 @@ Each chunk carries `filepath`, `start_line`, `end_line`, and the file's `mtime` 
 
 #### Vector store with hybrid scoring
 
-`core/vector_store.py` implements **hybrid retrieval** combining TF-IDF sparse scoring and dense FAISS embeddings:
+`core/vector_store.py` implements **hybrid retrieval** combining TF-IDF sparse scoring and dense embedding vectors:
 
-- Dense vectors use `nomic-embed-text` via Ollama or `sentence-transformers` locally.
+- Dense vectors use real semantic embeddings from Ollama's `/api/embed` (`nomic-embed-text`) when available, with a pure-Python TF-IDF cosine fallback when they aren't — no external vector database, fully offline.
 - Hybrid scores are a weighted combination of cosine similarity (dense) and TF-IDF overlap (sparse), improving recall across both semantic and exact-keyword queries.
-- The store persists to `~/.config/dev-assist/` as a FAISS index and JSON metadata with filepath and line number information.
+- The store persists to a **SQLite database** (`dev-assist/data/index.db`, WAL mode) holding embeddings plus filepath, start/end line, content, and `mtime` metadata — enabling incremental re-indexing and per-project retrieval.
 
 #### Conversation-aware query enrichment
 
-Before executing the FAISS search, `core/rag_engine.py` enriches the user query with identifiers extracted from the most recent assistant response — backtick-delimited names like function names, class names, and error codes. This means follow-up questions like "what does that function do?" retrieve the right chunks even when the query itself lacks explicit names.
+Before executing the vector-store search, `core/rag_engine.py` enriches the user query with identifiers extracted from the most recent assistant response — backtick-delimited names like function names, class names, and error codes. This means follow-up questions like "what does that function do?" retrieve the right chunks even when the query itself lacks explicit names.
 
 ```python
 # Example enrichment
@@ -490,16 +544,17 @@ Intent categories in match-priority order:
 
 | Priority | Intent | Matched input examples |
 |----------|--------|------------------------|
-| 1 | Ollama service control | `ollama on`, `ollama stop`, `ollama status` |
-| 2 | Indexer | `index .`, `index status`, `idx /src` |
-| 3 | Code audit | `audit`, `audit staged` |
-| 4 | Port conflict | `fix port 8080`, `kill port 3000`, `port 5432` |
-| 5 | Tunnel | `tunnel`, `expose 8000`, `ngrok` |
-| 6 | Git | `git push`, `git conflict`, `git rebase fix` |
-| 7 | File tools | `rename`, `clean` |
-| 8 | Built-ins | `model`, `help`, `status`, `history`, `plugins` |
-| 9 | Plugin check | Dynamic dispatch to registered plugins |
-| 10 | RAG fallthrough | `what`, `how`, `explain`, `bug`, `error`, `architecture` |
+| 1 | Agent mode | `do fix the failing test`, `agent add a CLI flag`, `undo` |
+| 2 | Ollama service control | `ollama on`, `ollama stop`, `ollama status` |
+| 3 | Indexer | `index .`, `index status`, `idx /src` |
+| 4 | Code audit | `audit`, `audit staged` |
+| 5 | Port conflict | `fix port 8080`, `kill port 3000`, `port 5432` |
+| 6 | Tunnel | `tunnel`, `expose 8000`, `ngrok` |
+| 7 | Git | `git push`, `git conflict`, `git rebase fix` |
+| 8 | File tools | `rename`, `clean` |
+| 9 | Built-ins | `model`, `help`, `status`, `history`, `plugins` |
+| 10 | Plugin check | Dynamic dispatch to registered plugins |
+| 11 | RAG fallthrough | `what`, `how`, `explain`, `bug`, `error`, `architecture` |
 
 Inputs that do not match any pattern fall through to the RAG engine as a general codebase question. Shell passthrough (lines prefixed with `!` or `!run`) bypasses the router entirely and goes directly to `modules/shell_exec.py`.
 
@@ -563,12 +618,17 @@ The plugin system allows extending dev-assist with additional task handlers regi
 
 ```
 dev-assist/tests/
-├── test_rag.py       Vector store operations, semantic chunking, hybrid retrieval,
-│                     mtime-based change detection, conversation-aware query enrichment
-├── test_router.py    Intent pattern matching, module dispatch, shell passthrough
-│                     detection, plugin fallthrough, RAG fallback
-└── test_shell.py     Shell execution, session cwd tracking, cd/cd- handling,
-                      pipeline and redirect support
+├── test_agent.py       Agent loop, planning, approval gating, tool dispatch, undo
+├── test_agent_mode.py  agent-mode flag parsing (--auto/--yes/--verbose) and undo flow
+├── test_providers.py   Provider catalog, lazy key resolution, adapter normalisation
+├── test_rag.py         Vector store operations, semantic chunking, hybrid retrieval,
+│                       mtime-based change detection, conversation-aware query enrichment
+├── test_repo_map.py    Repo-map building, signature extraction, similarity fallback
+├── test_router.py      Intent pattern matching, module dispatch, shell passthrough
+│                       detection, plugin fallthrough, RAG fallback
+├── test_tools.py       Tool registry, JSON-Schema declarations, destructive-tool gates
+└── test_shell.py       Shell execution, session cwd tracking, cd/cd- handling,
+                        pipeline and redirect support
 ```
 
 Run with:
@@ -583,8 +643,8 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEV_ASSIST_API_KEY` | — | API key for Groq/OpenAI backend (never stored in settings.json) |
-| `DEV_ASSIST_DATA_DIR` | `~/.config/dev-assist` | Vector store and session persistence directory |
+| `DEV_ASSIST_API_KEY` | — | Catch-all API key for remote providers (Groq/OpenAI/…); provider-specific keys (`GROQ_API_KEY`, …) are also respected. Never stored in settings.json |
+| `DEV_ASSIST_DATA_DIR` | `~/.config/dev-assist` | Persistent CLI history directory (SQLite `cli_history.db`) |
 | `DEV_ASSIST_CONFIG_DIR` | Repo-relative `config/` | Settings file directory (auto-set in frozen binary by runtime hook) |
 
 ### Dependencies
@@ -599,6 +659,7 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 | `fastapi >= 0.110` | Web UI backend — async routes, SSE streaming |
 | `uvicorn >= 0.29` | ASGI server that runs the web UI in-process |
 | `python-multipart >= 0.0.9` | Multipart form parsing for file uploads |
+| `Pillow >= 10.0` | Image attachment resize/compress before sending to vision models |
 
 ---
 
@@ -621,17 +682,19 @@ OllamaGUI._send_message()
        │                              │
        │                         inject top-k chunk texts into system prompt
        │
-       ├─ Local mode? ─────────► SmartChatWorker (QThread)
+       ├─ Provider mode? ──► SmartChatWorker (QThread)
        │                              │
        │                    images? → auto-select vision model
        │                              │
-       │                    OllamaClient.chat_stream → HTTP POST /api/chat
+       │                    get_client(provider_id, api_key).chat_stream()
+       │                    (Ollama /api/chat · OpenAI-compatible REST ·
+       │                     Anthropic Messages)
        │                              │
        │                    token → pyqtSignal [flushed every 120ms]
        │
-       └─ Groq mode? ──────────► GroqChatWorker (QThread)
+       └─ Crew mode? ──────► CrewChatWorker (QThread)
                                       │
-                             GroqClient → POST /openai/v1/chat/completions
+                             sequential agents via the same provider client
                                       │
                              streamed tokens → pyqtSignal
        │
@@ -653,11 +716,23 @@ User input
     │
     ├─ router.handle_input(text)
     │       │
+    │       ├─ do/agent/undo ────────────► modules.agent_mode.run()/undo()
+    │       │                                   │
+    │       │                             core.agent.run_agent()
+    │       │                                   ├─ repo_map.build_repo_map()  (project map)
+    │       │                                   ├─ plan sub-tasks (provider chat)
+    │       │                                   ├─ per sub-task: tools.execute_tool(name, args)
+    │       │                                   │       │
+    │       │                                   │       ├─ write/edit → change_tracker.snapshot()
+    │       │                                   │       │                (approver gate first)
+    │       │                                   │       └─ result fed back to model
+    │       │                                   └─ final answer (+ 'undo' revert)
+    │       │
     │       ├─ ollama on/off/status ──────► ollama_status.{start,stop,check}()
     │       │
     │       ├─ index / idx ──────────────► indexer.run(text)
     │       │                                   │
-    │       │                             semantic chunking + FAISS embed
+    │       │                             semantic chunking + SQLite embed store
     │       │
     │       ├─ audit ────────────────────► code_audit.run()
     │       │                                   │
@@ -690,17 +765,20 @@ session.add_assistant(response)
 
 ```
 ~/.ollama_gui/                   # GUI application data
-├── chat.db                      # SQLite: conversations, messages, crews
+├── chat.db                      # SQLite: conversations, messages, crews, memories, notes
+├── settings.json                # theme, active provider, API key, last model, memory toggle
 └── rag/
     ├── index.faiss              # FAISS vector index (IndexFlatIP)
     └── meta.json                # [{text, source, hash}] chunk metadata
 
-~/.config/dev-assist/            # dev-assist data (DEV_ASSIST_DATA_DIR)
-├── vector_store.faiss           # FAISS index for project code RAG
-└── vector_meta.json             # [{filepath, start_line, end_line, content, mtime}]
+~/.config/dev-assist/            # dev-assist CLI history (DEV_ASSIST_DATA_DIR)
+└── cli_history.db               # SQLite: persistent terminal session history
+
+dev-assist/data/
+└── index.db                     # SQLite embedding store for project-code RAG
 
 dev-assist/config/
-└── settings.json                # AI engine, model, preferences (no secrets)
+└── settings.json                # active provider, models, preferences (no secrets)
 ```
 
 ---
@@ -804,18 +882,21 @@ ollama-forge/
 ├── README.md
 │
 ├── gui/                        PyQt6 desktop chat + manager
-│   ├── main.py                 Main window — layout, mode toggle, theme, chat popup
+│   ├── main.py                 Main window — layout, provider selector, theme, chat popup
+│   ├── providers.py            Multi-provider catalog + REST clients (mirrors dev-assist)
 │   ├── ollama_client.py        Ollama REST API client
 │   ├── groq_client.py          Groq API client (streaming, vision, model list)
 │   ├── chat_renderer.py        Markdown → styled HTML for QTextBrowser
 │   ├── attachment_handler.py   File/image/ZIP processor for model injection
 │   ├── code_runner.py          AI code block executor (15+ languages)
-│   ├── ollama_manager.py       Ollama install/upgrade/uninstall + model manager
-│   ├── database.py             SQLite conversation and crew store
+│   ├── ollama_manager/         Ollama install/upgrade/uninstall + model manager window
+│   ├── manager_entry.py        Ollama-ai-manager binary entry point
+│   ├── database.py             SQLite conversation, crew, memory, note store
 │   ├── rag_engine.py           FAISS RAG engine (no LangChain)
 │   ├── workers.py              QThread workers — DirectChat, CrewChat, RAGBuild,
 │   │                           GroqChatWorker, SmartChatWorker, CodeRunWorker
 │   ├── crew_dialogs.py         Multi-agent crew configuration UI
+│   ├── notes_dialog.py         Notes panel — create, edit, search, send to chat
 │   ├── _syspath_patch.py       PyInstaller frozen binary sys.path fix
 │   └── requirements.txt
 │
@@ -823,13 +904,16 @@ ollama-forge/
 │   ├── main.py                 CLI entry point and REPL loop
 │   ├── web_app.py              FastAPI web UI with async streaming (SSE)
 │   ├── webui/                  Plain HTML/CSS/JS frontend (no build step)
-│   ├── core/                   AI engine, config, RAG orchestrator, router,
-│   │                           session context, shell helpers, vector store
-│   ├── modules/                Shell exec, git, code audit, indexer,
+│   ├── core/                   AI engine, providers, agent loop, tools, repo map,
+│   │                           change tracker, TUI status, config, RAG orchestrator,
+│   │                           router, session context, shell helpers, SQLite store
+│   ├── modules/                Agent mode, shell exec, git, code audit, indexer,
 │   │                           tunnel helper, file tools, port helper
 │   ├── plugins/                Makefile runner, Telegram notifier
-│   ├── tests/                  pytest suite — RAG, router, shell
-│   ├── config/settings.json    Persistent AI engine and model config
+│   ├── tests/                  pytest suite — agent, agent mode, providers, RAG,
+│   │                           repo map, router, tools, shell
+│   ├── data/index.db           SQLite embedding store for project-code RAG
+│   ├── config/settings.json    Persistent provider and model config
 │   ├── .env.example            Environment variable reference with examples
 │   └── requirements.txt
 │
