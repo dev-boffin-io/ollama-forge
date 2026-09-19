@@ -108,6 +108,8 @@ set EXCLUDED=^
     --exclude-module tkinter ^
     --exclude-module _tkinter
 
+goto :build_start
+
 REM ── Post-build validation ───────────────────────────────────────────────
 REM PyInstaller silently warns + skips a hidden import if it isn't installed
 REM in the build venv; binary still builds then dies at runtime with
@@ -129,6 +131,7 @@ for %%M in (%HIDDEN_MODULES%) do (
 echo [✓] All hidden imports bundled correctly: %~1
 goto :eof
 
+:build_start
 REM ── Build Ollama-ai-gui.exe ─────────────────────────────────────────────
 echo [→] Building Ollama-ai-gui.exe...
 cd /d "%GUI_DIR%"
