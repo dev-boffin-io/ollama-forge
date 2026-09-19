@@ -362,3 +362,19 @@ class TestConfig:
         # api_key should be blank in saved file when env var is set
         api_key_in_file = saved.get("api_engine", {}).get("api_key", "")
         assert api_key_in_file == ""
+
+    def test_legacy_engine_maps_to_provider(self, tmp_path):
+        import core.config as cfg_mod
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text('{"ai_engine": "api"}')
+        orig = cfg_mod.CONFIG_PATH
+        try:
+            cfg_mod.CONFIG_PATH = settings_path
+            from core.config import load_config
+            cfg = load_config()
+            assert isinstance(cfg, dict)
+            assert cfg["active_provider"] == "groq"
+            assert "ollama" in cfg["providers"]
+            assert "azure" in cfg["providers"]
+        finally:
+            cfg_mod.CONFIG_PATH = orig

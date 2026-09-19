@@ -230,6 +230,7 @@ def _try_plugin(text: str) -> bool:
 
 def _model_select(text: str) -> None:
     from core.ai import _load_config, save_config, get_current_model
+    from core import providers as _providers
 
     parts = text.strip().split()
     cfg = _load_config()
@@ -240,58 +241,73 @@ def _model_select(text: str) -> None:
     else:
         cfg_dict = dict(cfg)
 
-    engine = cfg_dict.get("ai_engine", "ollama")
+    active = cfg_dict.get("active_provider", "ollama")
 
     if len(parts) == 1:
         _print(f"""
 🤖 Current model   : [green]{get_current_model()}[/green]
 
    Usage:
-   [bold]model list[/bold]               → list all available models
-   [bold]model set[/bold] <name>         → switch model
-   [bold]model engine ollama[/bold]      → use Ollama (local) engine
-   [bold]model engine api[/bold]         → use external API engine
+   [bold]model list[/bold]                     → list all providers & their models
+   [bold]model set[/bold] <name>               → set model for the active provider
+   [bold]model provider[/bold] <id>            → switch provider (ollama, openai,
+                                    anthropic, groq, openrouter,
+                                    mistral, azure, custom)
+   [bold]model engine[/bold] ollama|api        → legacy alias for provider switch
 """)
         return
 
     sub = parts[1].lower()
 
     if sub == "list":
-        ollama_models = cfg_dict.get("ollama_available_models", [])
-        current_ollama = cfg_dict.get("ollama_model", "")
-        _print("\n📦 [bold]Ollama (local) models:[/bold]")
-        for m in ollama_models:
-            active = " ✅  [dim]← active[/dim]" if (engine == "ollama" and m == current_ollama) else ""
-            _print(f"   • {m}{active}")
+        _print("\n📦 [bold]AI providers:[/bold]")
+        for pid, p in _providers.PROVIDERS.items():
+            prof = cfg_dict.get("providers", {}).get(pid, {})
+            label = prof.get("label") or p.get("label", pid)
+            kind = prof.get("kind") or p.get("kind", "")
+            default = prof.get("default_model") or p.get("default_model", "")
+            marker = " ✅  [dim]← active[/dim]" if pid == active else ""
+            _print(f"\n• [bold]{label}[/bold] [dim]({pid})[/dim]{marker}  [dim]{kind}[/dim]")
+            models = prof.get("models") or p.get("models", [])
+            for m in models:
+                m_active = " ← active" if (pid == active and m == default) else ""
+                _print(f"    {m}{m_active}")
+        _print(f"\n💡 Active provider: [cyan]{active}[/cyan]  |  "
+               f"[bold]model provider[/bold] <id>  ·  [bold]model set[/bold] <name>\n")
+        return
 
-        api_cfg = cfg_dict.get("api_engine", {})
-        api_models = api_cfg.get("api_available_models", [])
-        current_api = api_cfg.get("api_model", "")
-        _print("\n🌐 [bold]API models:[/bold]")
-        for m in api_models:
-            active = " ✅  [dim]← active[/dim]" if (engine == "api" and m == current_api) else ""
-            _print(f"   • {m}{active}")
-        _print(f"\n💡 Engine: [cyan]{engine}[/cyan]  |  [dim]model set <name>[/dim]\n")
+    if sub == "provider" and len(parts) >= 3:
+        pid = parts[2].lower()
+        if pid not in _providers.PROVIDERS:
+            _print("⚠️  Valid providers: " + ", ".join(_providers.PROVIDER_ORDER))
+            return
+        cfg_dict["active_provider"] = pid
+        cfg_dict["ai_engine"] = "ollama" if pid == "ollama" else "api"  # legacy mirror
+        save_config(cfg_dict)
+        _print(f"✅ Provider → [green]{_providers.PROVIDERS[pid]['label']}[/green]  "
+               f"(model: {get_current_model()})")
         return
 
     if sub == "set" and len(parts) >= 3:
         model_name = parts[2]
-        if engine == "ollama":
-            cfg_dict["ollama_model"] = model_name
-        else:
-            cfg_dict.setdefault("api_engine", {})["api_model"] = model_name
+        prof = cfg_dict.setdefault("providers", {}).get(active, {})
+        prof["default_model"] = model_name
+        cfg_dict["providers"][active] = prof
         save_config(cfg_dict)
-        _print(f"✅ Model → [green]{engine}/{model_name}[/green]")
+        _print(f"✅ Model → [green]{active}/{model_name}[/green]")
         return
 
     if sub == "engine" and len(parts) >= 3:
         new_engine = parts[2].lower()
-        if new_engine not in ("ollama", "api"):
-            _print("⚠️  Valid engines: [bold]ollama[/bold]  or  [bold]api[/bold]")
+        mapping = {"ollama": "ollama", "api": "groq"}
+        if new_engine not in mapping:
+            _print("⚠️  Valid engines: [bold]ollama[/bold]  or  [bold]api[/bold] "
+                   "(api maps to the Groq provider)")
             return
+        cfg_dict["active_provider"] = mapping[new_engine]
         cfg_dict["ai_engine"] = new_engine
         save_config(cfg_dict)
-        _print(f"✅ Engine → [green]{new_engine}[/green]  (model: {get_current_model()})")
+        _print(f"✅ Engine → [green]{mapping[new_engine]}[/green]  (model: {get_current_model()})")
         return
 
     _print("⚠️  Unknown command. Type [bold]help[/bold] for available commands.")
@@ -358,9 +374,9 @@ def _show_help() -> None:
 
 [bold cyan]AI Model:[/bold cyan]
   model                    →  বর্তমান model দেখাও
-  model list               →  সব available model
-  model set <নাম>          →  model বদলাও
-  model engine ollama|api  →  engine বদলাও
+  model list               →  সব provider ও model
+  model set <নাম>          →  active provider-এর model বদলাও
+  model provider <id>      →  provider বদলাও (ollama, groq, openai, anthropic, openrouter, mistral, azure, custom)
 
 [bold cyan]Other:[/bold cyan]
   status                   →  show index + session status

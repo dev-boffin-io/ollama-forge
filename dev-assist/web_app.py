@@ -181,14 +181,27 @@ async def _ollama_stop() -> str:
 # ---------------------------------------------------------------------------
 
 async def _stream_response(sid: str, user_text: str, file_context: str = "", images: list[str] | None = None):
-    from core.ai import _load_config as _ai_cfg, _get_engine, _get_ollama_model
+    from core.ai import _load_config as _ai_cfg, get_provider
+    from core.providers import is_provider
 
     cfg = _ai_cfg()
-    engine = _get_engine(cfg)
+    pid = None
 
     settings = _get_settings(sid)
     if settings.get("engine"):
-        engine = settings["engine"]
+        eng = settings["engine"]
+        if eng == "ollama":
+            pid = "ollama"
+        elif eng == "api":
+            pid = "groq"  # legacy engine name maps to Groq
+        elif is_provider(eng):
+            pid = eng
+
+    try:
+        provider = get_provider(cfg, provider=pid)
+    except Exception as exc:
+        yield f"⚠️ Provider error: {exc}"
+        return
 
     history = _get_history(sid, limit=MAX_CONTEXT_MESSAGES)
     # api_chat saves the current user message into history before streaming;
@@ -199,94 +212,60 @@ async def _stream_response(sid: str, user_text: str, file_context: str = "", ima
     msgs = [{"role": m["role"], "content": m["content"]} for m in history]
     full_q = f"{user_text}\n\n--- Attached file ---\n{file_context}" if file_context else user_text
     last_msg = {"role": "user", "content": full_q}
-    if images:
+    if images and provider.kind == "ollama":
         # Ollama's vision API takes base64 strings directly under "images".
         last_msg["images"] = images
+    elif images:
+        # OpenAI-compatible vision format: content becomes a list of
+        # text + image_url parts (Anthropic adapters translate these).
+        content_parts = [{"type": "text", "text": full_q}]
+        for b64 in images:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+        last_msg["content"] = content_parts
     msgs.append(last_msg)
 
-    if engine == "ollama":
+    if provider.kind == "ollama":
         if await _ollama_status_async() != "running":
             yield "⚠️ Ollama is stopped. Start it with `ollama on` or the ▶ Start button, then try again."
             return
+    try:
+        model = settings.get("api_model") or settings.get("ollama_model") or provider.resolve_model()
+        async for token in _stream_provider(provider, msgs, model):
+            yield token
+        return
+    except Exception as exc:
+        yield f"\n\n⚠️ {provider.label} error: {exc}"
+        return
+
+
+async def _stream_provider(provider, msgs, model):
+    token_queue: queue.Queue = queue.Queue()
+
+    def _producer() -> None:
         try:
-            import ollama
-            model = settings.get("ollama_model") or _get_ollama_model(cfg)
-            if not model or model.startswith("⚠"):
-                yield "⚠️ No valid model selected. Start ollama and pick a model from settings."
-                return
-            token_queue: queue.Queue = queue.Queue()
-
-            def _producer() -> None:
-                try:
-                    for chunk in ollama.chat(model=model, messages=msgs, stream=True):
-                        token = (
-                            chunk.get("message", {}).get("content", "")
-                            if isinstance(chunk, dict)
-                            else getattr(getattr(chunk, "message", None), "content", "")
-                        )
-                        if token:
-                            token_queue.put(token)
-                except Exception as exc:
-                    if images:
-                        token_queue.put(
-                            f"\n\n⚠️ Ollama error: {exc}\n"
-                            f"(Note: the selected model may not support image/vision input.)"
-                        )
-                    else:
-                        token_queue.put(f"\n\n⚠️ Ollama error: {exc}")
-                finally:
-                    token_queue.put(None)
-
-            t = threading.Thread(target=_producer, daemon=True)
-            t.start()
-
-            loop = asyncio.get_running_loop()
-            while True:
-                token = await loop.run_in_executor(None, token_queue.get)
-                if token is None:
-                    break
-                yield token
+            tokens = provider.stream(msgs, model=model)
+            # pull in executor chunks of the stream
+            try:
+                for token in tokens:
+                    if token:
+                        token_queue.put(token)
+            except Exception as exc:
+                token_queue.put(f"\n\n⚠️ {provider.label} error: {exc}")
         except Exception as exc:
-            yield f"\n\n⚠️ Ollama error: {exc}"
-    else:
-        try:
-            from core.ai import _get_api_key, _get_api_url, _get_api_model
-            import urllib.request, json as _j
+            token_queue.put(f"\n\n⚠️ {provider.label} error: {exc}")
+        finally:
+            token_queue.put(None)
 
-            api_key = _get_api_key(cfg)
-            api_url = settings.get("api_url") or _get_api_url(cfg)
-            model = settings.get("api_model") or _get_api_model(cfg)
-
-            api_msgs = msgs[:-1]
-            if images:
-                # OpenAI-compatible vision format: content becomes a list of
-                # text + image_url parts instead of a plain string.
-                content_parts = [{"type": "text", "text": full_q}]
-                for b64 in images:
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                    })
-                api_msgs.append({"role": "user", "content": content_parts})
-            else:
-                api_msgs.append({"role": "user", "content": full_q})
-
-            payload = _j.dumps({"model": model, "messages": api_msgs, "stream": False}).encode()
-            req = urllib.request.Request(
-                api_url, data=payload,
-                headers={"Content-Type": "application/json",
-                         "Authorization": f"Bearer {api_key}"},
-            )
-
-            def _call():
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    return _j.loads(r.read())
-
-            loop = asyncio.get_running_loop()
-            data = await loop.run_in_executor(None, _call)
-            yield data["choices"][0]["message"]["content"]
-        except Exception as exc:
-            yield f"\n\n⚠️ API error: {exc}"
+    threading.Thread(target=_producer, daemon=True).start()
+    loop = asyncio.get_running_loop()
+    while True:
+        token = await loop.run_in_executor(None, token_queue.get)
+        if token is None:
+            break
+        yield token
 
 
 # ---------------------------------------------------------------------------
