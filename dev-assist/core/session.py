@@ -41,6 +41,9 @@ class SessionContext:
         # session store (core.session_store). None keeps the in-memory-only
         # behaviour used by tests and non-REPL callers.
         self.store_id: str | None = None
+        # Which agent handled the most recent turn (set by the router before
+        # recording; it is persisted alongside the messages).
+        self.agent: str = "build"
 
     # ── History management ─────────────────────────────────────────────────
 
@@ -60,7 +63,7 @@ class SessionContext:
             return
         try:
             from core import session_store
-            session_store.append_message(self.store_id, role, content)
+            session_store.append_message(self.store_id, role, content, agent=self.agent)
         except Exception:
             pass
 

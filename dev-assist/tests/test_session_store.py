@@ -192,3 +192,66 @@ class TestDurability:
         assert store.append_message(s.id, "user", None) is None
         assert store.append_message(s.id, None, "still works") is None
         assert store.message_count(s.id) == 0
+
+
+class TestAgentColumn:
+    def test_append_message_stores_agent(self, store):
+        s = store.create_session()
+        store.append_message(s.id, "user", "fix the thing", agent="coder")
+        store.append_message(s.id, "assistant", "done", agent="coder")
+        msgs = store.get_messages(s.id)
+        assert [m.agent for m in msgs] == ["coder", "coder"]
+
+    def test_agent_defaults_empty_when_not_given(self, store):
+        s = store.create_session()
+        store.append_message(s.id, "user", "hi")
+        assert store.get_messages(s.id)[0].agent == ""
+
+    def test_agent_value_sanitised(self, store):
+        s = store.create_session()
+        store.append_message(s.id, "user", "hi", agent="a" * 100)
+        assert len(store.get_messages(s.id)[0].agent) <= 40
+
+    def test_migration_adds_agent_column_to_legacy_db(self, store, tmp_path):
+        # Simulate a DB created before agent routing existed. Use a raw
+        # connection here so we control the exact (old) schema.
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(ss.db_path())
+        try:
+            conn.executescript("""
+                DROP TABLE IF EXISTS messages;
+                DROP TABLE IF EXISTS sessions;
+                CREATE TABLE sessions (
+                    id      TEXT PRIMARY KEY,
+                    title   TEXT NOT NULL DEFAULT '',
+                    project TEXT NOT NULL DEFAULT '',
+                    created INTEGER NOT NULL,
+                    updated INTEGER NOT NULL
+                );
+                CREATE TABLE messages (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    role       TEXT    NOT NULL,
+                    content    TEXT    NOT NULL,
+                    created    INTEGER NOT NULL
+                );
+                INSERT INTO sessions (id, title, project, created, updated)
+                    VALUES ('legacy', '', '', 0, 0);
+                INSERT INTO messages (session_id, role, content, created)
+                    VALUES ('legacy', 'user', 'old message', 0);
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Reopening runs _ensure_schema → ALTER adds the column.
+        with ss._connect() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        assert "agent" in cols
+        msgs = store.get_messages("legacy")
+        assert [m.content for m in msgs] == ["old message"]
+        assert msgs[0].agent == ""  # populated with the column default
+
+        # And the migrated DB accepts new messages with an agent label.
+        stored = store.append_message("legacy", "assistant", "new", agent="reviewer")
+        assert stored is not None and stored.agent == "reviewer"

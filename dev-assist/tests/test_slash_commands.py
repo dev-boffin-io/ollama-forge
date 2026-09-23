@@ -176,3 +176,43 @@ class TestDispatch:
         assert "/nope" not in out
         assert "Unknown command" in out
         assert "/init" in out
+
+
+class TestAgentsAndCompact:
+    def test_agents_and_compact_registered(self, store, tmp_path):
+        cmds = slash.list_commands(str(tmp_path))
+        assert cmds["agents"].source == "builtin"
+        assert cmds["compact"].source == "builtin"
+        assert "agents" in slash.command_names(str(tmp_path))
+        assert "compact" in slash.command_names(str(tmp_path))
+
+    def test_agents_lists_router(self, store, tmp_path, capsys, monkeypatch):
+        from core import config as core_config
+        monkeypatch.setattr(core_config, "load_config", lambda: {
+            "routing": {"enabled": True, "default_agent": "coder"},
+            "agents": {},
+        })
+        assert slash.execute("agents", "", str(tmp_path)) is True
+        out = capsys.readouterr().out
+        assert "coder" in out
+        assert "reviewer" in out
+        assert "automatic routing: on" in out
+        assert "default agent: coder" in out
+
+    def test_compact_returns_none_without_active_session(self, store, tmp_path, capsys):
+        assert slash.execute("compact", "", str(tmp_path)) is True
+        assert "No active session" in capsys.readouterr().out
+
+    def test_compact_summarises_and_stores_turn(self, store, tmp_path, capsys, monkeypatch):
+        from core import agents as agents_mod
+        monkeypatch.setattr(agents_mod, "compact_context", lambda transcript: "SUMMARIZED_NOW")
+
+        s = store.new_session(project=str(tmp_path))
+        store.append_message(s.id, "user", "first long thing " + "x" * 100)
+        store.append_message(s.id, "assistant", "reply " + "y" * 100)
+
+        assert slash.execute("compact", "", str(tmp_path)) is True
+        msgs = store.get_messages(s.id)
+        assert msgs[-1].agent == "compaction"
+        assert "SUMMARIZED_NOW" in msgs[-1].content
+        assert "Compacted" in capsys.readouterr().out

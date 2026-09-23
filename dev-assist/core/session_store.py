@@ -61,6 +61,7 @@ class StoredMessage:
     role: str
     content: str
     created: int
+    agent: str = ""
 
 
 # ── Location / connection ────────────────────────────────────────────────────
@@ -91,13 +92,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             role       TEXT    NOT NULL,
             content    TEXT    NOT NULL,
-            created    INTEGER NOT NULL
+            created    INTEGER NOT NULL,
+            agent      TEXT    NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session
             ON messages(session_id, id);
         CREATE INDEX IF NOT EXISTS idx_sessions_updated
             ON sessions(updated DESC);
-        """)
+        """
+    )
+    # Migration: databases created before agent routing lack the column.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    if "agent" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN agent TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
@@ -136,6 +143,7 @@ def _row_to_message(row: sqlite3.Row) -> StoredMessage:
         role=row["role"],
         content=row["content"],
         created=row["created"],
+        agent=row["agent"] if "agent" in row.keys() else "",
     )
 
 
@@ -208,21 +216,29 @@ def _derive_title(content: str) -> str:
     return one_line[:_MAX_TITLE_CHARS]
 
 
-def append_message(session_id: str, role: str, content: str) -> StoredMessage | None:
+def append_message(
+    session_id: str,
+    role: str,
+    content: str,
+    agent: str = "",
+) -> StoredMessage | None:
     """
     Persist one chat turn. Returns the stored message (None if the content is
     empty or the session doesn't exist — write failures never raise).
+    ``agent`` labels which specialised agent produced the turn ('' when unknown).
     """
     content = (content or "").strip()
     role = (role or "").strip() if isinstance(role, str) else ""
+    agent = (agent or "").strip()[:40] if isinstance(agent, str) else ""
     if not content or role not in ("user", "assistant"):
         return None
     now = int(time.time())
     try:
         with _connect() as conn:
             cur = conn.execute(
-                "INSERT INTO messages (session_id, role, content, created) VALUES (?,?,?,?)",
-                (session_id, role, content, now),
+                "INSERT INTO messages (session_id, role, content, created, agent) "
+                "VALUES (?,?,?,?,?)",
+                (session_id, role, content, now, agent),
             )
             conn.execute(
                 "UPDATE sessions SET updated = ? WHERE id = ?",
@@ -243,6 +259,7 @@ def append_message(session_id: str, role: str, content: str) -> StoredMessage | 
             role=role,
             content=content,
             created=now,
+            agent=agent,
         )
     except sqlite3.Error:
         return None

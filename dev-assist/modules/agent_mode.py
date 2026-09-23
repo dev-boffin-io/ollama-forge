@@ -45,7 +45,17 @@ def _make_renderer(verbose: bool):
     from core import tui_status
 
     def on_event(kind: str, text: str) -> None:
-        if kind == "tool":
+        if kind == "route":
+            name = text.split("·", 1)[0].strip()
+            icon = _AGENT_ICONS.get(name, "→")
+            if _console:
+                _console.print(Panel(
+                    f"{icon} [bold]{text}[/bold]",
+                    title="Agent", border_style="cyan",
+                ))
+            else:
+                _print(f"  {icon} Agent: {text}")
+        elif kind == "tool":
             name = text.split(":", 1)[0]
             icon = _TOOL_ICONS.get(name, "•")
             tui_status.set_activity(text[:60])
@@ -265,14 +275,20 @@ _FLAG_RULES = (
     (r"\s--yes\b|\s-y\b", "auto_yes"),
     (r"\s--verbose\b|\s-v\b", "verbose"),
 )
+_AGENT_FLAG_RE = re.compile(r"\s--agent\s+([a-zA-Z0-9_-]+)")
 
 
 def _parse_run_args(text: str) -> tuple[str, dict]:
     """Strip agent-mode flags from the raw user line.
 
-    Returns (task, flags) with flags = {"auto", "auto_yes", "verbose"}.
+    Returns (task, flags) with flags = {"auto", "auto_yes", "verbose",
+    "agent"} where "agent" is the explicit --agent override or None.
     """
-    flags = {"auto": False, "auto_yes": False, "verbose": False}
+    flags = {"auto": False, "auto_yes": False, "verbose": False, "agent": None}
+    m = _AGENT_FLAG_RE.search(text)
+    if m:
+        flags["agent"] = m.group(1)
+        text = _AGENT_FLAG_RE.sub("", text).strip()
     for pattern, key in _FLAG_RULES:
         if re.search(pattern, text):
             flags[key] = True
@@ -288,11 +304,72 @@ def run(text: str) -> None:
     if not task:
         _print("[yellow]Usage:[/yellow] do <task>    e.g. [dim]do fix the failing test in tests/[/dim]")
         _print("[dim]Flags: --auto/--yolo (run with no approval, tracked for undo), "
-               "--yes (approve prompts automatically), --verbose (show tool output)[/dim]")
-        _print("[dim]After a run: 'undo' reverts every file it changed.[/dim]")
+               "--yes (approve prompts automatically), --verbose (show tool output), "
+               "--agent <name> (build|coder|reviewer|explore)[/dim]")
+        _print("[dim]Tasks are auto-routed to a specialised agent (see /agents); "
+               "After a run: 'undo' reverts every file it changed.[/dim]")
         return
 
     run_task(task, flags=flags)
+
+
+_AGENT_ICONS = {
+    "build": "🏗️",
+    "coder": "⌨️",
+    "reviewer": "🔍",
+    "explore": "🧭",
+    "general": "🤖",
+    "compaction": "🗜️",
+}
+
+
+def _print_route(decision) -> None:
+    """Show which agent was chosen and why."""
+    icon = _AGENT_ICONS.get(decision.agent_id, "→")
+    label = f"{icon} routed → [bold]{decision.agent_id}[/bold]"
+    _print(f"\n{label}  [dim]{decision.reason}[/dim]\n")
+
+
+def _routing_context() -> str:
+    """Recent session turns as classification context (never raises)."""
+    try:
+        from core.session import get_session
+        turns = get_session().get_history()
+        lines = [
+            f"{('user' if t.role == 'user' else 'assistant')}: {t.content[:300]}"
+            for t in turns[-4:]
+        ]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _compact_session_if_needed(threshold_chars: int) -> str:
+    """
+    During the thinking phase: if the persisted session has grown beyond the
+    compaction threshold, summarise it and return the summary for the next run
+    to carry forward. Best-effort; returns "" when compaction is unnecessary.
+    """
+    try:
+        from core import session_store
+        sid = session_store.current_session_id()
+        if not sid:
+            return ""
+        messages = session_store.get_messages(sid)
+        from core import agents
+        if not agents.should_compact(messages, threshold_chars):
+            return ""
+        summary = agents.compact_context(agents._msgs_text(messages))
+        if not summary:
+            return ""
+        total = sum(len(
+            str(m.content if isinstance(m, dict) else getattr(m, "content", "") or "")
+        ) for m in messages)
+        _print(f"[dim]🗜️  compacted {len(messages)} prior messages "
+               f"({total:,} chars → summary) — continue from context.[/dim]")
+        return summary
+    except Exception:
+        return ""
 
 
 def run_task(
@@ -312,6 +389,7 @@ def run_task(
     auto = bool(flags.get("auto"))
     auto_yes = bool(flags.get("auto_yes"))
     verbose = bool(flags.get("verbose"))
+    forced_agent = str(flags.get("agent") or "").strip() or None
 
     if workdir is None:
         try:
@@ -321,6 +399,34 @@ def run_task(
             workdir = os.getcwd()
     _print(f"[bold cyan]🤖 agent[/bold cyan] [dim]{workdir}[/dim]")
     _print(f"[dim]task:[/dim] {task}\n")
+
+    # ── Thinking phase: automatic agent routing + compaction ──
+    agent_id = "build"
+    extra_context = ""
+    try:
+        from core import agents
+        settings = agents._load_settings()
+        decision = agents.route(
+            task,
+            context=_routing_context(),
+            forced=forced_agent,
+            settings=settings,
+        )
+        default = settings.get("default_agent") or "build"
+        if decision.forced:
+            _print_route(decision)
+        elif settings.get("enabled", True) and decision.agent_id != default:
+            _print_route(decision)
+        agent_id = decision.agent_id if decision.agent_id != "build" or not settings.get("enabled", True) else default
+        # Compaction only applies to automatic (non-forced) runs, so an
+        # explicit --agent choice is never diluted by summary context.
+        if settings.get("enabled", True) and not forced_agent:
+            extra_context = _compact_session_if_needed(
+                int(settings.get("compaction_chars") or 60000)
+            )
+    except Exception:
+        agent_id = "build"
+        extra_context = ""
 
     from core import tui_status
     from core.agent import run_agent
@@ -359,6 +465,8 @@ def run_task(
             workdir=workdir,
             approver=approver,
             on_event=_make_renderer(verbose),
+            agent=agent_id,
+            extra_context=extra_context,
         )
     except KeyboardInterrupt:
         _print("\n[yellow]Interrupted.[/yellow]")
@@ -369,17 +477,18 @@ def run_task(
     if tracker and tracker.has_changes():
         _print(f"\n[bold]{tracker.diffstat()}[/bold]  [dim](type 'undo' to revert)[/dim]")
 
-    _record_turn(task, final)
+    _record_turn(task, final, agent=agent_id)
     return final
 
 
-def _record_turn(task: str, final: str) -> None:
+def _record_turn(task: str, final: str, agent: str = "build") -> None:
     """Record the agent exchange into the persistent session (best effort)."""
     if not final:
         return
     try:
         from core.session import get_session
         sess = get_session()
+        sess.agent = agent
         if sess.store_id:
             sess.add_user(task)
             sess.add_assistant(final)

@@ -9,7 +9,6 @@ then a combined final answer. No real ollama/API required.
 import json
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -173,3 +172,83 @@ class TestRunAgent:
         assert "found the bug" in ctx
         assert "Current sub-task (2 of 2)" in ctx
         assert "Step2" in ctx
+
+
+class TestRunAgentRouting:
+    def test_route_event_emitted_first(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "plan routed run done"},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        events = []
+        run_agent("fix main.py", workdir=str(tmp_path), on_event=lambda k, t: events.append((k, t)))
+        assert events[0][0] == "route"
+        assert events[0][1].startswith("build")
+
+    def test_coder_agent_uses_coder_prompt(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "done"},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        run_agent("refactor main.py", workdir=str(tmp_path), agent="coder")
+        assert any(system.startswith("You are the coder agent") for system in fake.system_contents)
+
+    def test_reviewer_skips_planning_and_carries_good_prompt(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        # No planning call: with planning disabled the first provider call is
+        # the (tools-on) reviewer sub-task itself.
+        fake = FakeModel([
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "Potential bug at line 3."},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        events = []
+        result = run_agent("review main.py", workdir=str(tmp_path), agent="reviewer",
+                           on_event=lambda k, t: events.append((k, t)))
+        assert "bug" in result.lower()
+        # system prompt is the reviewer's
+        assert any(system.startswith("You are the reviewer agent") for system in fake.system_contents)
+        # route event names the reviewer
+        route_events = [t for k, t in events if k == "route"]
+        assert route_events and route_events[0].startswith("reviewer")
+        # planning was skipped: the first chat call had tools on
+        assert fake.calls and fake.calls[0][0] is True
+
+    def test_extra_context_appended_to_system_prompt(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "done"},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        run_agent("fix main.py", workdir=str(tmp_path),
+                  extra_context="Compacted conversation summary:\nwe changed x")
+        assert any("# Prior context" in s and "we changed x" in s for s in fake.system_contents)
+
+    def test_unknown_agent_falls_back_to_build(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "ok"},
+        ])
+        _patch_agent(monkeypatch, fake)
+        events = []
+        run_agent("t", workdir=str(tmp_path), agent="mystery", on_event=lambda k, t: events.append((k, t)))
+        assert events[0][1].startswith("build")

@@ -36,7 +36,9 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from core import agents as agent_registry
 from core import change_tracker
+from core.agents import AgentSpec
 from core.repo_map import build_repo_map
 from core.tools import (
     DESTRUCTIVE_TOOLS,
@@ -49,24 +51,9 @@ MAX_STEPS = 24             # per sub-task step budget
 MAX_SUBTASKS = 5           # how many sub-tasks a plan may contain
 TOTAL_STEPS_CAP = 120      # hard safety cap across all sub-tasks
 
-SYSTEM_PROMPT = """You are dev-assist, a coding agent that works directly in the user's project.
-
-You have tools. Use them instead of guessing:
-- Explore with list_dir, glob, and grep before assuming where code lives.
-- Always read_file before you edit_file, so you can quote the original text exactly.
-- edit_file needs old_string to match the raw file exactly and appear exactly once. Never include the line-number prefixes that read_file adds.
-- Use apply_patch for multi-file edits, file moves, or additions/deletions in one call.
-- Use bash for builds, tests, and git — not for reading or editing files.
-- Use web_search and web_fetch to look up external info and read pages.
-- Use todowrite to track the remaining work on a long task, and task to delegate an isolated chunk to a subagent.
-- When you need a decision or preference from the user, use question instead of guessing.
-- Load reusable instructions with skill before proceeding when one applies.
-
-Work in small, verifiable steps. After changing code, check your work (run the test, re-read the file) rather than assuming it worked.
-
-When the task is done, stop calling tools and reply with a short summary of what you changed. Be concise. Do not pad the answer with restatements of the question.
-
-Working directory: {workdir}"""
+# The default executor's prompt lives with the agent registry so routing and
+# the loop stay in sync; kept as a module-level name for callers/tests.
+SYSTEM_PROMPT = agent_registry.resolve("build").system_prompt
 
 PLANNING_PROMPT = """You are the task planner for dev-assist, a coding agent.
 The user has a single overall request, but a long one that may require many steps.
@@ -439,6 +426,8 @@ def run_agent(
     approver: Callable[[str, dict], bool] | None = None,
     on_event: Callable[[str, str], None] | None = None,
     max_steps: int = MAX_STEPS,
+    agent: str | AgentSpec = "build",
+    extra_context: str = "",
 ) -> str:
     """
     Run the agent, planning the task into sub-tasks and executing each
@@ -447,10 +436,18 @@ def run_agent(
     task      — what the user asked for.
     workdir   — project root; defaults to the current directory.
     approver  — called as approver(tool_name, args) -> bool before any
-                destructive tool runs. Defaults to refusing them.
+                destructive tool runs. Defaults to refusing them (which is
+                also the behaviour read-only agents want).
     on_event  — optional progress hook, called as on_event(kind, text)
-                with kind in {"tool", "result", "text", "warn", "plan"}.
+                with kind in {"tool", "result", "text", "warn", "plan",
+                "route"}.
     max_steps — per sub-task step budget (default 24).
+    agent     — which registered agent to run (core.agents.ALL_AGENTS):
+                "build" (default), "coder", "reviewer", "explore", or a
+                user-defined agent. Review/explore/persona agents skip
+                multi-step planning and are read-only by prompt + policy.
+    extra_context — extra carry-forward context (e.g. a compacted summary of
+                an earlier conversation) appended to the system prompt.
 
     Before planning, the project's layout (file tree + top-level
     signatures) is injected as a repo map. For large projects the map is
@@ -467,6 +464,9 @@ def run_agent(
         if on_event:
             on_event(kind, text)
 
+    spec = agent_registry.resolve(agent)
+    emit("route", f"{spec.id} · {spec.description}")
+
     from core.ai import _load_config
     from core.ai import get_provider as _get_provider
     cfg = _load_config()
@@ -480,11 +480,19 @@ def run_agent(
     map_info = build_repo_map(task, workdir)
     map_block = _map_block(map_info["text"])
 
-    # ── Planning phase ──
-    plan = _plan_subtasks(task, provider, repo_map=map_block)
-    emit("plan", _format_plan(plan))
+    # ── Thinking phase ──
+    # Default agents plan the task into sub-tasks; point-agents (review,
+    # explore) execute the request directly in a single step.
+    if spec.uses_planning:
+        plan = _plan_subtasks(task, provider, repo_map=map_block)
+        emit("plan", _format_plan(plan))
+    else:
+        plan = [{"title": spec.name.capitalize(), "goal": task}]
+        emit("plan", f"📋 {spec.name}: running as a single direct step.")
 
-    system_content = SYSTEM_PROMPT.format(workdir=workdir)
+    system_content = spec.system_prompt.format(workdir=workdir)
+    if extra_context.strip():
+        system_content += "\n\n## Prior context\n" + extra_context.strip()
     if map_block:
         system_content += "\n\n" + map_block
 
