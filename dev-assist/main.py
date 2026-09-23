@@ -24,6 +24,16 @@ Automatic agent routing (opencode-style):
   build (default) · coder · reviewer · explore, plus hidden compaction for
   long sessions. Force one with: do <task> --agent <name>  (see: /agents)
 
+Dynamic provider / model switching:
+  Switch the AI provider or model live from the REPL — takes effect on the
+  very next message and persists across sessions:
+    /provider            → interactive provider picker  (/provider list)
+    /provider <id>       → switch provider (ollama, groq, openai, anthropic,
+                           openrouter, mistral, azure, custom)
+    /model               → interactive model picker      (/model list)
+    /model set <name>    → set the active provider's model (/model <name>)
+  Legacy aliases: model provider <id> · model set <name> · model engine ollama|api
+
 Keyboard shortcuts:
   ctrl+p  command palette     ctrl+c  clear input (empty: quit)
   ctrl+x  leader key → n new session · l list sessions · s status ·
@@ -362,6 +372,10 @@ def _build_prompt_fn():
             # slash commands (opencode-style)
             "/init", "/review", "/agents", "/compact", "/new", "/sessions",
             "/resume", "/rename", "/delete", "/help",
+            # provider / model switching (opencode-style)
+            "/provider", "/provider list", "/provider ollama", "/provider groq",
+            "/provider openai", "/provider anthropic",
+            "/model", "/model list", "/model set ",
             # automatic agent routing
             "do fix --agent coder", "do refactor --agent coder",
             "do review --agent reviewer", "do where is --agent explore",

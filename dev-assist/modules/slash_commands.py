@@ -517,6 +517,213 @@ def _cmd_compact(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
     return True
 
 
+# ── Provider / model switching (opencode-style /provider and /model) ─────────
+
+def _print_provider_table() -> None:
+    """Table of every provider with its configured default model."""
+    from core import providers as _providers
+    from core.ai import _load_config
+    cfg = _load_config()
+    active = _providers.active_provider(cfg)
+    _print("\n📦 [bold]AI providers:[/bold]\n")
+    for pid in _providers.PROVIDER_ORDER:
+        base = _providers.PROVIDERS.get(pid) or {}
+        prof = _providers.provider_profile(cfg, pid)
+        label = base.get("label") or pid
+        kind = prof.get("kind") or base.get("kind") or ""
+        default = prof.get("default_model") or base.get("default_model", "")
+        marker = " ✅  [dim]← active[/dim]" if pid == active else ""
+        _print(f"  [bold]{pid:<10}[/bold] {label}{marker}")
+        _print(f"           [dim]{kind} · default: {default or '(none)'}[/dim]")
+    _print(f"\n💡 Active provider: [cyan]{active}[/cyan]  →  [bold]/provider <id>[/bold]  "
+           f"([bold]/provider list[/bold])\n")
+
+
+def _cmd_provider(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    """Switch AI providers dynamically: /provider, /provider list, /provider <id>."""
+    from core import providers as _providers
+    from core.ai import _load_config, get_current_model, known_provider_ids, switch_provider
+    from core.providers import ProviderError
+
+    args = parse_arguments(raw_args)
+    if not args:
+        _print(f"🤖 Active provider: [cyan]{_providers.active_provider(_load_config())}[/cyan]  "
+               f"→ model [green]{get_current_model()}[/green]")
+        return _pick_provider()
+
+    sub = args[0].lower()
+    if sub == "list":
+        _print_provider_table()
+        return True
+
+    pid = args[0].lower()
+    if pid not in _providers.PROVIDERS:
+        _print(f"⚠️  Unknown provider [bold]{args[0]}[/bold]. "
+               f"Known: {', '.join(known_provider_ids())}")
+        _print("   [bold]/provider list[/bold] shows all providers.")
+        return True
+    try:
+        switch_provider(pid)
+    except ProviderError as exc:
+        _print(f"⚠️  {exc}")
+        return True
+    label = (_providers.PROVIDERS.get(pid) or {}).get("label", pid)
+    _print(f"✅ Provider → [green]{label}[/green]  (model: {get_current_model()})")
+    return True
+
+
+def _pick_provider() -> bool:
+    """Interactive numbered provider picker."""
+    from core import providers as _providers
+    from core.ai import get_current_model, known_provider_ids, switch_provider
+    from core.providers import ProviderError
+    order = known_provider_ids()
+    _print("[bold]Switch provider[/bold]  ([dim]Enter to cancel[/dim])\n")
+    for i, pid in enumerate(order, 1):
+        label = (_providers.PROVIDERS.get(pid) or {}).get("label", pid)
+        _print(f"  [bold]{i:>2}[/bold]  {pid:<10} {label}")
+    try:
+        choice = input("   pick a provider (number): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        _print("\nCancelled.")
+        return True
+    if not choice:
+        _print("Cancelled.")
+        return True
+    try:
+        idx = int(choice)
+    except ValueError:
+        _print(f"⚠️  Not a number: {choice!r}")
+        return True
+    if not (1 <= idx <= len(order)):
+        _print(f"⚠️  No provider #{idx}.")
+        return True
+    pid = order[idx - 1]
+    try:
+        switch_provider(pid)
+    except ProviderError as exc:
+        _print(f"⚠️  {exc}")
+        return True
+    _print(f"✅ Provider → [green]{pid}[/green]  (model: {get_current_model()})")
+    return True
+
+
+def _print_models_for(pid: str) -> None:
+    """Numbered list of a provider's models (live list, catalog fallback)."""
+    from core import providers as _providers
+    from core.ai import _load_config, resolve_provider_live_models
+    models = resolve_provider_live_models(pid)
+    cfg = _load_config()
+    default = _providers.provider_profile(cfg, pid).get("default_model") or ""
+    label = (_providers.PROVIDERS.get(pid) or {}).get("label", pid)
+    _print(f"\n📚 [bold]{label}[/bold] [dim]({pid})[/dim] — {len(models)} models:\n")
+    for i, m in enumerate(models, 1):
+        marker = "  ✅ ← active" if m == default else ""
+        _print(f"  {i:>2}.  {m}{marker}")
+    _print("\n💡 Set: [bold]/model set <name>[/bold]   (or directly: [bold]/model <name>[/bold])\n")
+
+
+def _cmd_model(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    """Show / switch the active model: /model, /model list, /model set <name>."""
+    from core import providers as _providers
+    from core.ai import _load_config, get_current_model, set_provider_model
+    from core.providers import ProviderError
+
+    args = parse_arguments(raw_args)
+    cfg = _load_config()
+    active = _providers.active_provider(cfg)
+
+    if not args:
+        _print(f"🤖 Active model : [green]{get_current_model()}[/green]")
+        _print(f"   Provider     : [cyan]{active}[/cyan]  "
+               f"([bold]/provider <id>[/bold] to switch)\n")
+        return _pick_model()
+
+    sub = args[0].lower()
+    if sub == "list":
+        pid = args[1].lower() if len(args) >= 2 else active
+        if pid not in _providers.PROVIDERS:
+            _print(f"⚠️  Unknown provider [bold]{pid}[/bold]. "
+                   f"Known: {', '.join(_providers.PROVIDER_ORDER)}")
+            return True
+        _print_models_for(pid)
+        return True
+
+    if sub == "set" and len(args) >= 2:
+        model_name = " ".join(args[1:])
+    elif sub == "set":
+        _print("Usage: [bold]/model set <name>[/bold]")
+        return True
+    else:
+        model_name = " ".join(args)
+    if not model_name:
+        _print("Usage: [bold]/model set <name>[/bold]")
+        return True
+    try:
+        pair = set_provider_model(model_name, active)
+    except ProviderError as exc:
+        _print(f"⚠️  {exc}")
+        return True
+    _print(f"✅ Model → [green]{pair}[/green]")
+    return True
+
+
+def _pick_model() -> bool:
+    """Interactive numbered model picker for the active provider."""
+    from core import providers as _providers
+    from core.ai import (
+        _load_config,
+        get_current_model,
+        resolve_provider_live_models,
+        set_provider_model,
+    )
+    from core.providers import ProviderError
+    cfg = _load_config()
+    active = _providers.active_provider(cfg)
+    models = resolve_provider_live_models(active)
+    _print(f"[bold]Switch model[/bold] ([cyan]{active}[/cyan])  ([dim]Enter to cancel[/dim])\n")
+    for i, m in enumerate(models, 1):
+        marker = ""
+        if m == _providers.provider_profile(cfg, active).get("default_model"):
+            marker = "  ✅ active"
+        _print(f"  [bold]{i:>2}[/bold]  {m}{marker}")
+    if not models:
+        try:
+            name = input("   no models listed — type a model name (Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            _print("\nCancelled.")
+            return True
+        if not name:
+            _print("Cancelled.")
+            return True
+    else:
+        try:
+            choice = input("   pick a model (number or exact name): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            _print("\nCancelled.")
+            return True
+        if not choice:
+            _print("Cancelled.")
+            return True
+        try:
+            idx = int(choice)
+        except ValueError:
+            name = choice
+        else:
+            if 1 <= idx <= len(models):
+                name = models[idx - 1]
+            else:
+                _print(f"⚠️  No model #{idx}.")
+                return True
+    try:
+        pair = set_provider_model(name, active)
+    except ProviderError as exc:
+        _print(f"⚠️  {exc}")
+        return True
+    _print(f"✅ Model → [green]{pair}[/green]  (from {get_current_model()})")
+    return True
+
+
 def _builtin_specs() -> dict[str, CommandSpec]:
     return {
         "init": CommandSpec(
@@ -547,6 +754,20 @@ def _builtin_specs() -> dict[str, CommandSpec]:
             description="compact the current session's history into a summary",
             source="builtin",
             handler=_cmd_compact,
+        ),
+        "provider": CommandSpec(
+            name="provider",
+            description="show / switch the AI provider (interactive picker with no args)",
+            source="builtin",
+            hints=("list", "<id>"),
+            handler=_cmd_provider,
+        ),
+        "model": CommandSpec(
+            name="model",
+            description="show / switch the active model (interactive picker with no args)",
+            source="builtin",
+            hints=("list", "set <name>"),
+            handler=_cmd_model,
         ),
         "new": CommandSpec(name="new", description="start a fresh session", source="builtin", handler=_cmd_new),
         "sessions": CommandSpec(name="sessions", description="list saved sessions", source="builtin", handler=_cmd_sessions),

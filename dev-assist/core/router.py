@@ -9,9 +9,9 @@ Improvements:
 
 from __future__ import annotations
 
-import re
 import importlib
 import os
+import re
 
 # ── Intent patterns ──────────────────────────────────────────────────────────
 INTENTS = [
@@ -141,8 +141,8 @@ def _smart_fallback(text: str) -> None:
 def _plain_ai_with_history(text: str) -> None:
     """Send to AI, injecting conversation history."""
     try:
-        from core.session import get_session
         from core.ai import ask_ai
+        from core.session import get_session
         sess = get_session()
         sess.add_user(text)
         response = ask_ai(text, capture_output=True)
@@ -229,8 +229,14 @@ def _try_plugin(text: str) -> bool:
 # ── Built-in handlers ────────────────────────────────────────────────────────
 
 def _model_select(text: str) -> None:
-    from core.ai import _load_config, save_config, get_current_model
     from core import providers as _providers
+    from core.ai import (
+        _load_config,
+        get_current_model,
+        set_provider_model,
+        switch_provider,
+    )
+    from core.providers import ProviderError
 
     parts = text.strip().split()
     cfg = _load_config()
@@ -278,23 +284,23 @@ def _model_select(text: str) -> None:
 
     if sub == "provider" and len(parts) >= 3:
         pid = parts[2].lower()
-        if pid not in _providers.PROVIDERS:
-            _print("⚠️  Valid providers: " + ", ".join(_providers.PROVIDER_ORDER))
+        try:
+            switch_provider(pid)
+        except ProviderError as exc:
+            _print(f"⚠️  {exc}")
             return
-        cfg_dict["active_provider"] = pid
-        cfg_dict["ai_engine"] = "ollama" if pid == "ollama" else "api"  # legacy mirror
-        save_config(cfg_dict)
         _print(f"✅ Provider → [green]{_providers.PROVIDERS[pid]['label']}[/green]  "
                f"(model: {get_current_model()})")
         return
 
     if sub == "set" and len(parts) >= 3:
-        model_name = parts[2]
-        prof = cfg_dict.setdefault("providers", {}).get(active, {})
-        prof["default_model"] = model_name
-        cfg_dict["providers"][active] = prof
-        save_config(cfg_dict)
-        _print(f"✅ Model → [green]{active}/{model_name}[/green]")
+        model_name = " ".join(parts[2:])
+        try:
+            pair = set_provider_model(model_name)
+        except ProviderError as exc:
+            _print(f"⚠️  {exc}")
+            return
+        _print(f"✅ Model → [green]{pair}[/green]")
         return
 
     if sub == "engine" and len(parts) >= 3:
@@ -304,9 +310,11 @@ def _model_select(text: str) -> None:
             _print("⚠️  Valid engines: [bold]ollama[/bold]  or  [bold]api[/bold] "
                    "(api maps to the Groq provider)")
             return
-        cfg_dict["active_provider"] = mapping[new_engine]
-        cfg_dict["ai_engine"] = new_engine
-        save_config(cfg_dict)
+        try:
+            switch_provider(mapping[new_engine])
+        except ProviderError as exc:
+            _print(f"⚠️  {exc}")
+            return
         _print(f"✅ Engine → [green]{mapping[new_engine]}[/green]  (model: {get_current_model()})")
         return
 
@@ -314,8 +322,8 @@ def _model_select(text: str) -> None:
 
 
 def _show_status() -> None:
-    from core.vector_store import get_stats
     from core.session import get_session
+    from core.vector_store import get_stats
     stats = get_stats()
     sess = get_session()
     _print(f"""
@@ -328,9 +336,8 @@ def _show_status() -> None:
 
 def _show_help() -> None:
     try:
-        from rich.panel import Panel
         from rich.console import Console
-        from rich.text import Text
+        from rich.panel import Panel
         console = Console()
         help_text = """\
 [bold cyan]Agent Mode (edits your code):[/bold cyan]
