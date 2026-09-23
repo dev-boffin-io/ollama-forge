@@ -476,6 +476,47 @@ def _cmd_help(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
     return True
 
 
+def _cmd_agents(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    from core import agents
+    settings = agents._load_settings()
+    _print(agents.describe())
+    default = settings.get("default_agent") or "build"
+    state = "on" if settings.get("enabled", True) else "off"
+    _print(f"[dim]automatic routing: {state} · default agent: [bold]{default}[/bold][/dim]")
+    _print("[dim]Force an agent with [bold]--agent <name>[/bold] on 'do' tasks, "
+           "or start a task with 'review:' / 'explore:'.[/dim]")
+    _print("")
+    return True
+
+
+def _cmd_compact(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    """Manually compact the current session's history into a summary turn."""
+    from core import agents, session_store
+    sid = session_store.current_session_id()
+    if not sid:
+        _print("No active session to compact.")
+        return True
+    messages = session_store.get_messages(sid)
+    if not messages:
+        _print("Nothing to compact — the session has no messages yet.")
+        return True
+    total = sum(len(m.content) for m in messages)
+    _print(f"[dim]🗜️  Compacting {len(messages)} messages ({total:,} chars)…[/dim]")
+    summary = agents.compact_context(agents._msgs_text(messages))
+    if not summary:
+        _print("Compaction produced no summary (empty conversation?).")
+        return True
+    stored = session_store.append_message(sid, "assistant", summary, agent="compaction")
+    if stored is None:
+        _print("⚠️  Could not write the compacted summary.")
+        return True
+    _print(f"[green]✔ Compacted history → stored summary "
+           f"({len(summary)} chars, message #{stored.id}).[/green]")
+    _print("[dim](/resume <id> to see it, or just keep working — the next "
+           "automatic run will pick it up as prior context.)[/dim]")
+    return True
+
+
 def _builtin_specs() -> dict[str, CommandSpec]:
     return {
         "init": CommandSpec(
@@ -494,6 +535,18 @@ def _builtin_specs() -> dict[str, CommandSpec]:
             subtask=True,
             hints=tuple(hints(PROMPT_REVIEW)),
             handler=_run_template,
+        ),
+        "agents": CommandSpec(
+            name="agents",
+            description="list specialised agents and automatic routing state",
+            source="builtin",
+            handler=_cmd_agents,
+        ),
+        "compact": CommandSpec(
+            name="compact",
+            description="compact the current session's history into a summary",
+            source="builtin",
+            handler=_cmd_compact,
         ),
         "new": CommandSpec(name="new", description="start a fresh session", source="builtin", handler=_cmd_new),
         "sessions": CommandSpec(name="sessions", description="list saved sessions", source="builtin", handler=_cmd_sessions),

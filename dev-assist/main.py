@@ -16,8 +16,13 @@ CLI input modes:
   !run <cmd>          →  force shell run    (e.g. !run find . -name *.py)
 
 Slash commands:
-  /init /review /new /sessions /resume /rename /delete /help
+  /init /review /agents /compact /new /sessions /resume /rename /delete /help
   (custom /<name> commands + skills; see: /help)
+
+Automatic agent routing (opencode-style):
+  Tasks are auto-routed to a specialised agent during the thinking phase:
+  build (default) · coder · reviewer · explore, plus hidden compaction for
+  long sessions. Force one with: do <task> --agent <name>  (see: /agents)
 
 Keyboard shortcuts:
   ctrl+p  command palette     ctrl+c  clear input (empty: quit)
@@ -355,7 +360,11 @@ def _build_prompt_fn():
             # agent mode
             "do ", "agent ", "undo",
             # slash commands (opencode-style)
-            "/init", "/review", "/new", "/sessions", "/resume", "/rename", "/delete", "/help",
+            "/init", "/review", "/agents", "/compact", "/new", "/sessions",
+            "/resume", "/rename", "/delete", "/help",
+            # automatic agent routing
+            "do fix --agent coder", "do refactor --agent coder",
+            "do review --agent reviewer", "do where is --agent explore",
             # shell shortcuts
             "!ls", "!ls -la", "!pwd", "!cat", "!grep", "!ps aux",
             "!df -h", "!free -h", "!top", "!htop", "!ping", "!curl",

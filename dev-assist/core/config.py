@@ -83,6 +83,14 @@ if _PYDANTIC:
             "*secret*", "*password*", "*credential*",
         ]
 
+    class RoutingConfig(BaseModel):
+        enabled: bool = Field(default=True, description="Auto-route tasks to specialised agents")
+        default_agent: str = Field(default="build", description="Fallback agent for unclassified tasks")
+        compaction_chars: int = Field(
+            default=60000, ge=1000,
+            description="Compact the session history once it exceeds this many chars",
+        )
+
     @staticmethod
     def _provider_defaults() -> dict[str, ProviderProfile]:
         from core import providers as _providers
@@ -129,6 +137,12 @@ if _PYDANTIC:
             default_factory=dict,
             description="Slash commands (/name): {template, description, subtask} "
                         "with $ARGUMENTS / $1..$N placeholders",
+        )
+        routing: RoutingConfig = Field(default_factory=RoutingConfig)
+        agents: dict[str, dict] = Field(
+            default_factory=dict,
+            description="Agent routing: custom agents or overrides of built-ins "
+                        "{name, description, system_prompt, read_only, uses_planning, hidden, mode}",
         )
 
         def get_active_api_key(self) -> str:
