@@ -30,7 +30,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
 | [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with 8 AI providers (Ollama, OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom), FAISS RAG, vision models, file/ZIP attachments, markdown rendering, notes panel, persistent long-term memory, and crew multi-agent mode |
-| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, an agent mode that reads/edits files and runs commands (`do <task>`), shell execution, git helpers, tunnel management, and multi-provider AI |
+| [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, an OpenCode-style agent that reads/edits files and runs commands on its own (plain chat triggers it automatically), shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
 
@@ -319,21 +319,24 @@ da --web --port 8080
 ⚡ dev-assist > ~$ !docker ps -a
 ⚡ dev-assist > ~$ !htop
 
-# Agent mode — the agent reads/edits files and runs commands for you
-⚡ dev-assist > ~$ do fix the failing test in tests/
-⚡ dev-assist > ~$ agent add rate limiting to the API client
-⚡ dev-assist > ~$ do refactor core/session.py --verbose   # show full tool output
-⚡ dev-assist > ~$ do cleanup build artifacts --yes         # auto-approve prompts
-⚡ dev-assist > ~$ do bump the version everywhere --auto    # no approval prompts
-⚡ dev-assist > ~$ undo                                     # revert the last run's changes
+# Chat — OpenCode-style: any message runs the default agent (tools + planning)
+⚡ dev-assist > ~$ what files are in this project?  # agent lists them on its own
+⚡ dev-assist > ~$ fix the failing test in tests/
+⚡ dev-assist > ~$ add rate limiting to the API client
 
-# Indexing and RAG
+# Agent mode (explicit — same loop, flag-selectable)
+⚡ dev-assist > ~$ do refactor core/session.py --agent coder  # force an agent
+⚡ dev-assist > ~$ do refactor core/session.py --verbose      # show full tool output
+⚡ dev-assist > ~$ do cleanup build artifacts --yes           # auto-approve prompts
+⚡ dev-assist > ~$ do bump the version everywhere --auto      # no approval prompts
+⚡ dev-assist > ~$ undo                                       # revert the last run's changes
+
+# Indexing and fast RAG (explicit `ask`)
 ⚡ dev-assist > ~$ index .                    # Index current project
 ⚡ dev-assist > ~$ index /path/to/project     # Index a specific path
 ⚡ dev-assist > ~$ index status               # Show indexing stats
 ⚡ dev-assist > ~$ index clear                # Clear the index
-⚡ dev-assist > ~$ what does the router do?   # RAG query after indexing
-⚡ dev-assist > ~$ explain the session class  # Automatic RAG fallthrough
+⚡ dev-assist > ~$ ask what does the router do?   # RAG over the index (no tools)
 
 # DevOps modules
 ⚡ dev-assist > ~$ audit                      # AI code audit on staged diff
@@ -343,7 +346,14 @@ da --web --port 8080
 ⚡ dev-assist > ~$ tunnel                     # cloudflared tunnel management
 ⚡ dev-assist > ~$ expose 3000                # Quick-expose port 3000 via tunnel
 
-# Session management
+# Slash commands & persistent sessions
+⚡ dev-assist > ~$ /model                     # interactive model picker
+⚡ dev-assist > ~$ /provider                  # switch provider interactively
+⚡ dev-assist > ~$ /new · /sessions · /resume # persistent sessions (/compact, /rename, /delete)
+⚡ dev-assist > ~$ /init · /review · /agents  # guided agents.md setup, code review, agent info
+⚡ dev-assist > ~$ /help                      # list all slash commands
+
+# Built-ins
 ⚡ dev-assist > ~$ status                     # AI engine, model, session info
 ⚡ dev-assist > ~$ history                    # Show conversation history
 ⚡ dev-assist > ~$ history clear              # Clear conversation history
@@ -360,6 +370,7 @@ dev-assist/
 ├── webui/                  Plain HTML/CSS/JS frontend (no build step)
 ├── core/
 │   ├── ai.py               AI engine — provider-agnostic front-end over core.providers
+│   ├── agents.py           Agent registry + automatic routing and compaction
 │   ├── providers.py        Multi-provider catalog — Ollama, OpenAI, Anthropic, Groq,
 │   │                       OpenRouter, Mistral, Azure, custom (mirrors gui/providers.py)
 │   ├── agent.py            Tool-calling agent loop — planning, sub-tasks, approval
@@ -370,8 +381,9 @@ dev-assist/
 │   ├── config.py           Pydantic-validated config with env var overrides
 │   ├── prompts.py          Jinja2 prompt template engine with built-in fallback
 │   ├── rag_engine.py       RAG orchestrator — retrieval, re-ranking, prompt build
-│   ├── router.py           Intent detection — regex dispatch to modules
+│   ├── router.py           Intent detection — regex dispatch to modules / agent fallback
 │   ├── session.py          In-memory conversation context — history, cwd, model
+│   ├── session_store.py    Persistent sessions (SQLite) with write-through recording
 │   ├── shell.py            Subprocess helpers — run_git, RunResult
 │   ├── vector_store.py     SQLite embedding store (Ollama /api/embed + TF-IDF fallback)
 │   ├── cli_history.py      Persistent CLI history saved to the data directory
@@ -380,6 +392,7 @@ dev-assist/
 │   └── banner.py           Rich-formatted startup banner
 ├── modules/
 │   ├── agent_mode.py       Agent CLI front-end — plan panels, diff previews, undo
+│   ├── slash_commands.py   /commands — provider/model pickers, sessions, templates
 │   ├── shell_exec.py       Interactive shell passthrough with session cwd tracking
 │   ├── git_helper.py       AI-assisted git conflict/push/pull/rebase helpers
 │   ├── code_audit.py       Staged diff audit via AI review prompt
@@ -396,12 +409,15 @@ dev-assist/
 └── tests/
     ├── test_agent.py        Agent loop, planning, approval, tool dispatch
     ├── test_agent_mode.py   agent-mode flag parsing and undo flow
+    ├── test_main_shortcuts.py  Ctrl+P palette / leader-key shortcuts
     ├── test_providers.py    Provider catalog, key resolution, adapters
     ├── test_rag.py          RAG engine and vector store tests
     ├── test_repo_map.py     Repo-map building and similarity fallback
-    ├── test_router.py       Intent routing tests
-    ├── test_tools.py        Tool registry and execution
-    └── test_shell.py        Shell execution tests
+    ├── test_router.py       Intent routing, agent fallback, explicit `ask`
+    ├── test_session_store.py  SQLite session persistence and /resume
+    ├── test_shell.py        Shell execution tests
+    ├── test_slash_commands.py  /provider + /model pickers
+    └── test_tools.py        Tool registry, execution, root confinement
 ```
 
 ### AI Engine
@@ -453,7 +469,7 @@ Path resolution for the config file handles both normal dev usage (repo-relative
 
 ### Agent Mode
 
-`core/agent.py` implements a **tool-calling agent loop** with multi-step planning — the model acts on your project instead of just answering. Invoked from the `modules/agent_mode.py` CLI front-end via **`do <task>`**, **`agent <task>`**, and **`undo`** in the REPL.
+`core/agent.py` implements a **tool-calling agent loop** with multi-step planning — the model acts on your project instead of just answering. Invoked from the `modules/agent_mode.py` CLI front-end via **`do <task>`**, **`agent <task>`**, **`undo`** — and, by default, through **any ordinary chat message** (OpenCode-style, no `do` prefix needed). Plain messages honor the same `--agent`, `--yes`, and `--verbose` flags. The agent always works inside the directory dev-assist was launched in: file tools reject any path that escapes the project root.
 
 **Planning:** before doing anything, the agent asks the model to split the task into 2–5 concrete sub-tasks (a plan). Each sub-task runs its own tool loop with its own step budget (default 24 steps, with a hard 120-step safety cap across the whole run), carrying prior sub-task results forward as context. A final combined answer summarizes the whole run.
 
@@ -554,9 +570,10 @@ Intent categories in match-priority order:
 | 8 | File tools | `rename`, `clean` |
 | 9 | Built-ins | `model`, `help`, `status`, `history`, `plugins` |
 | 10 | Plugin check | Dynamic dispatch to registered plugins |
-| 11 | RAG fallthrough | `what`, `how`, `explain`, `bug`, `error`, `architecture` |
+| 11 | RAG (explicit) | `ask <question>` — fast Q&A over the index, no tools |
+| 12 | Agent fallback (default) | any unmatched input — runs the default `build` agent with tools + planning |
 
-Inputs that do not match any pattern fall through to the RAG engine as a general codebase question. Shell passthrough (lines prefixed with `!` or `!run`) bypasses the router entirely and goes directly to `modules/shell_exec.py`.
+Inputs that match no pattern fall through to the default agent (OpenCode-style): the model gets the full toolset and plan-and-execute loop, and works inside the directory dev-assist was launched from (file tools reject any path that escapes the project root). For fast, tool-free Q&A over an indexed codebase use `ask <question>`. Shell passthrough (lines prefixed with `!` or `!run`) bypasses the router entirely and goes directly to `modules/shell_exec.py`.
 
 ### Shell Execution
 
@@ -608,7 +625,7 @@ The web UI exposes the identical functionality as the terminal REPL — the same
 
 ### Plugins
 
-The plugin system allows extending dev-assist with additional task handlers registered dynamically as a fallback stage in the router (between built-ins and the RAG catch-all).
+The plugin system allows extending dev-assist with additional task handlers registered dynamically as a fallback stage in the router (between built-ins and the agent fallback).
 
 **Makefile plugin** (`plugins/makefile.py`): Detects `Makefile` targets in the project root and allows running them directly from the REPL by name.
 
@@ -618,17 +635,21 @@ The plugin system allows extending dev-assist with additional task handlers regi
 
 ```
 dev-assist/tests/
-├── test_agent.py       Agent loop, planning, approval gating, tool dispatch, undo
-├── test_agent_mode.py  agent-mode flag parsing (--auto/--yes/--verbose) and undo flow
-├── test_providers.py   Provider catalog, lazy key resolution, adapter normalisation
-├── test_rag.py         Vector store operations, semantic chunking, hybrid retrieval,
-│                       mtime-based change detection, conversation-aware query enrichment
-├── test_repo_map.py    Repo-map building, signature extraction, similarity fallback
-├── test_router.py      Intent pattern matching, module dispatch, shell passthrough
-│                       detection, plugin fallthrough, RAG fallback
-├── test_tools.py       Tool registry, JSON-Schema declarations, destructive-tool gates
-└── test_shell.py       Shell execution, session cwd tracking, cd/cd- handling,
-                        pipeline and redirect support
+├── test_agent.py          Agent loop, planning, approval gating, tool dispatch, undo
+├── test_agent_mode.py     agent-mode flag parsing (--auto/--yes/--verbose) and undo flow
+├── test_main_shortcuts.py REPL leader-key / Ctrl+P palette shortcuts
+├── test_providers.py      Provider catalog, lazy key resolution, adapter normalisation
+├── test_rag.py            Vector store operations, semantic chunking, hybrid retrieval,
+│                          mtime-based change detection, conversation-aware query enrichment
+├── test_repo_map.py       Repo-map building, signature extraction, similarity fallback
+├── test_router.py         Intent pattern matching, module dispatch, agent fallback,
+│                          explicit `ask` routing, plugin fallthrough
+├── test_session_store.py  SQLite session persistence and /resume restore
+├── test_shell.py          Shell execution, session cwd tracking, cd/cd- handling,
+│                          pipeline and redirect support
+├── test_slash_commands.py /provider + /model switching, interactive pickers
+└── test_tools.py          Tool registry, JSON-Schema declarations, project-root
+                           confinement, destructive-tool gates
 ```
 
 Run with:
@@ -746,15 +767,16 @@ User input
     │       │
     │       ├─ plugin match ────────────► plugin.handle(text)
     │       │
-    │       └─ RAG fallthrough ─────────► rag_engine.ask_with_context(text)
-    │                                           │
-    │                                     session._enrich_query(text)
-    │                                           │
-    │                                     vector_store.search(enriched, top_k=6)
-    │                                           │
-    │                                     prompts.render("rag_ask", query, chunks)
-    │                                           │
-    │                                     ai.ask_ai(prompt)  [stream to stdout]
+    │       ├─ ask <q> (explicit) ─────► rag_engine.ask_with_context(text)
+    │       │                               │
+    │       │                               ├─ session._enrich_query(text)
+    │       │                               ├─ vector_store.search(enriched, top_k=6)
+    │       │                               ├─ prompts.render("rag_ask", query, chunks)
+    │       │                               └─ ai.ask_ai(prompt)  [stream to stdout]
+    │       │
+    │       └─ agent fallback (default) ► core.agent.run_agent()
+    │                                       tools.execute_tool(name, args, workdir)
+    │                                       change_tracker snapshot / undo
     │
     ▼
 session.add_user(text)
@@ -907,11 +929,11 @@ ollama-forge/
 │   ├── core/                   AI engine, providers, agent loop, tools, repo map,
 │   │                           change tracker, TUI status, config, RAG orchestrator,
 │   │                           router, session context, shell helpers, SQLite store
-│   ├── modules/                Agent mode, shell exec, git, code audit, indexer,
-│   │                           tunnel helper, file tools, port helper
+│   ├── modules/                Agent mode, shell exec, slash commands, git, code
+│   │                           audit, indexer, tunnel helper, file tools, port helper
 │   ├── plugins/                Makefile runner, Telegram notifier
-│   ├── tests/                  pytest suite — agent, agent mode, providers, RAG,
-│   │                           repo map, router, tools, shell
+│   ├── tests/                  pytest suite — agent, agent mode, slash commands,
+│   │                           sessions, providers, RAG, repo map, router, tools, shell
 │   ├── data/index.db           SQLite embedding store for project-code RAG
 │   ├── config/settings.json    Persistent provider and model config
 │   ├── .env.example            Environment variable reference with examples
