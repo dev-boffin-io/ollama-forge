@@ -292,11 +292,33 @@ def run(text: str) -> None:
         _print("[dim]After a run: 'undo' reverts every file it changed.[/dim]")
         return
 
-    try:
-        from modules.shell_exec import get_cwd
-        workdir = get_cwd()
-    except Exception:
-        workdir = os.getcwd()
+    run_task(task, flags=flags)
+
+
+def run_task(
+    task: str,
+    *,
+    workdir: str | None = None,
+    flags: dict | None = None,
+) -> str:
+    """
+    Run the agent on an arbitrary task and return its final answer.
+
+    This is the shared executor behind `do <task>` and the `/` commands
+    (`/init`, `/review`, config commands, skills). When a persistent session
+    is active, the exchange is recorded into it.
+    """
+    flags = dict(flags or {})
+    auto = bool(flags.get("auto"))
+    auto_yes = bool(flags.get("auto_yes"))
+    verbose = bool(flags.get("verbose"))
+
+    if workdir is None:
+        try:
+            from modules.shell_exec import get_cwd
+            workdir = get_cwd()
+        except Exception:
+            workdir = os.getcwd()
     _print(f"[bold cyan]🤖 agent[/bold cyan] [dim]{workdir}[/dim]")
     _print(f"[dim]task:[/dim] {task}\n")
 
@@ -304,7 +326,7 @@ def run(text: str) -> None:
     from core.agent import run_agent
     from core.change_tracker import get_tracker
 
-    if flags["auto"]:
+    if auto:
         # Fully autonomous: skip the interactive Approver entirely and use the
         # "approve everything" policy. Changes are still snapshotted by the
         # change tracker, so `undo` works exactly as it always has. The
@@ -328,14 +350,15 @@ def run(text: str) -> None:
                    "afterwards to revert them all.")
         approver = approve_everything
     else:
-        approver = make_approver(workdir, auto_yes=flags["auto_yes"])
+        approver = make_approver(workdir, auto_yes=auto_yes)
 
+    final = ""
     try:
-        run_agent(
+        final = run_agent(
             task,
             workdir=workdir,
             approver=approver,
-            on_event=_make_renderer(flags["verbose"]),
+            on_event=_make_renderer(verbose),
         )
     except KeyboardInterrupt:
         _print("\n[yellow]Interrupted.[/yellow]")
@@ -345,4 +368,21 @@ def run(text: str) -> None:
     tracker = get_tracker()
     if tracker and tracker.has_changes():
         _print(f"\n[bold]{tracker.diffstat()}[/bold]  [dim](type 'undo' to revert)[/dim]")
+
+    _record_turn(task, final)
+    return final
+
+
+def _record_turn(task: str, final: str) -> None:
+    """Record the agent exchange into the persistent session (best effort)."""
+    if not final:
+        return
+    try:
+        from core.session import get_session
+        sess = get_session()
+        if sess.store_id:
+            sess.add_user(task)
+            sess.add_assistant(final)
+    except Exception:
+        pass
 

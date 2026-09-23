@@ -37,15 +37,45 @@ class SessionContext:
         self.indexed_path: str | None = None
         self.session_start: float = time.time()
         self._model_used: str = ""
+        # When set, every recorded turn is written through to the persistent
+        # session store (core.session_store). None keeps the in-memory-only
+        # behaviour used by tests and non-REPL callers.
+        self.store_id: str | None = None
 
     # ── History management ─────────────────────────────────────────────────
 
     def add_user(self, text: str) -> None:
         self._history.append(Turn(role="user", content=text))
         self._trim()
+        self._persist("user", text)
 
     def add_assistant(self, text: str) -> None:
         self._history.append(Turn(role="assistant", content=text))
+        self._trim()
+        self._persist("assistant", text)
+
+    def _persist(self, role: str, content: str) -> None:
+        """Write one turn to the persistent store — never raises on failure."""
+        if not self.store_id:
+            return
+        try:
+            from core import session_store
+            session_store.append_message(self.store_id, role, content)
+        except Exception:
+            pass
+
+    def bind_persisted_session(
+        self, session_id: str, messages: list[tuple[str, str, float]]
+    ) -> None:
+        """
+        Replace in-memory history with a stored session's messages and enable
+        write-through persistence for future turns.
+        """
+        self.store_id = session_id
+        self._history = [
+            Turn(role=role, content=content, timestamp=ts)
+            for role, content, ts in messages
+        ]
         self._trim()
 
     def _trim(self) -> None:
