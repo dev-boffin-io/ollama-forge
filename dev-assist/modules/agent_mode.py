@@ -477,6 +477,12 @@ def run_task(
     if tracker and tracker.has_changes():
         _print(f"\n[bold]{tracker.diffstat()}[/bold]  [dim](type 'undo' to revert)[/dim]")
 
+    if final:
+        if _console:
+            _console.print(f"\n{final}", markup=False)
+        else:
+            print(f"\n{final}")
+
     _record_turn(task, final, agent=agent_id)
     return final
 
