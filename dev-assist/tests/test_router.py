@@ -2,22 +2,20 @@
 Tests for core/router.py — intent detection and dispatch.
 """
 
-import sys
 import os
 import re
-import pytest
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.router import INTENTS
-
+from core.router import INTENTS, handle_input
 
 # ── Intent pattern matching tests ────────────────────────────────────────────
 
 def _match(text: str) -> str | None:
     """Return the func_name for the first matching intent, or None."""
     text_lower = text.lower()
-    for pattern, module_path, func_name in INTENTS:
+    for pattern, _module_path, func_name in INTENTS:
         if re.search(pattern, text_lower):
             return func_name
     return None
@@ -112,23 +110,23 @@ class TestIntentPatterns:
     def test_clear_history_reversed(self):
         assert _match("clear history") == "clear_history"
 
-    # RAG fallthrough
+    # RAG fallthrough (explicit `ask` only)
     def test_rag_ask(self):
         func = _match("ask what does main.py do")
         assert func == "rag_ask"
 
-    def test_rag_what(self):
-        func = _match("what is the architecture")
-        assert func == "rag_ask"
+    def test_rag_ask_requires_prefix(self):
+        assert _match("what is the architecture") is None
 
-    def test_rag_explain(self):
-        assert _match("explain this function") == "rag_ask"
-
-    def test_rag_bug(self):
-        assert _match("there is a bug here") == "rag_ask"
-
-    def test_rag_architecture(self):
-        assert _match("architecture of this project") == "rag_ask"
+    def test_plain_questions_not_rag(self):
+        # Plain text no longer routes to RAG — the agent handles it.
+        for text in (
+            "what is the architecture",
+            "explain this function",
+            "there is a bug here",
+            "what does this directory contain",
+        ):
+            assert _match(text) is None, text
 
     # Priority: index before rag
     def test_index_before_rag(self):
@@ -144,7 +142,7 @@ class TestIntentOrdering:
         assert len(patterns) == len(set(patterns)), "Duplicate patterns found in INTENTS"
 
     def test_broad_patterns_at_end(self):
-        """rag_ask patterns (what/how/explain) must come after specific ones."""
+        """explicit `ask` must come after specific module patterns."""
         rag_indices = [
             i for i, (_, _, fn) in enumerate(INTENTS) if fn == "rag_ask"
         ]
@@ -155,3 +153,46 @@ class TestIntentOrdering:
         if rag_indices and specific_indices:
             assert min(rag_indices) > max(specific_indices), \
                 "RAG fallthrough patterns must come AFTER specific module patterns"
+
+
+class TestAgentFallback:
+    def test_plain_message_routes_to_agent(self, monkeypatch):
+        """OpenCode parity: unmatched plain text runs the default agent."""
+        calls: list[tuple[str, dict]] = []
+
+        def fake_run_task(text, **kwargs):
+            calls.append((text, kwargs.get("flags", {})))
+            return "ok"
+
+        monkeypatch.setattr("modules.agent_mode.run_task", fake_run_task)
+        handle_input("what does this directory contain")
+        (task, flags) = calls[0]
+        assert task == "what does this directory contain"
+        assert flags.get("agent") is None
+
+    def test_plain_message_parses_flags(self, monkeypatch):
+        """Flags like --agent/--yes are honored on plain messages too."""
+        calls: list[tuple[str, dict]] = []
+
+        def fake_run_task(text, **kwargs):
+            calls.append((text, kwargs.get("flags", {})))
+            return "ok"
+
+        monkeypatch.setattr("modules.agent_mode.run_task", fake_run_task)
+        handle_input("list these files --agent explore --yes")
+        (task, flags) = calls[0]
+        assert task == "list these files"
+        assert flags.get("agent") == "explore"
+        assert flags.get("auto_yes") is True
+
+    def test_explicit_ask_bypasses_agent(self, monkeypatch):
+        """`ask ...` stays on fast RAG, not the agent."""
+        calls: list[str] = []
+
+        def fake_run_task(text, **kwargs):
+            calls.append(text)
+            return "ok"
+
+        monkeypatch.setattr("modules.agent_mode.run_task", fake_run_task)
+        handle_input("ask what does main.py do")
+        assert calls == []

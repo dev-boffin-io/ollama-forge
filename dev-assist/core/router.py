@@ -55,13 +55,8 @@ INTENTS = [
     (r"\bhistory\s+clear\b|\bclear\s+history\b", None,            "clear_history"),
     (r"\bhistory\b",                      None,                    "show_history"),
 
-    # ── RAG fallthrough (broad patterns — must be LAST) ───────────────────
-    (r"\bask\b.{0,60}",                   None,                    "rag_ask"),
-    (r"\bwhat\b.{0,80}",                  None,                    "rag_ask"),
-    (r"\bhow\b.{0,80}",                   None,                    "rag_ask"),
-    (r"\bexplain\b",                      None,                    "rag_ask"),
-    (r"\bbug\b|\berror\b|\bfix\b.{0,40}", None,                    "rag_ask"),
-    (r"\barchitecture\b|\bstructure\b",   None,                    "rag_ask"),
+    # ── RAG fallthrough (explicit `ask` only — plain text now goes to the agent) ─
+    (r"^\s*ask\b.{0,80}",                 None,                    "rag_ask"),
 ]
 
 
@@ -127,12 +122,14 @@ def _rag_ask(text: str) -> None:
 
 
 def _smart_fallback(text: str) -> None:
+    """OpenCode parity: every unmatched message runs through the default
+    agent (tools + planning) so it can list files, run commands, and edit
+    on its own — no `do` prefix needed."""
     try:
-        from core.vector_store import get_stats
-        if get_stats()["total_files"] > 0:
-            from core.rag_engine import ask_with_context
-            ask_with_context(text, use_history=True)
-            return
+        from modules.agent_mode import _parse_run_args, run_task
+        task, flags = _parse_run_args(text)
+        run_task(task, flags=flags)
+        return
     except Exception:
         pass
     _plain_ai_with_history(text)
@@ -349,11 +346,16 @@ def _show_help() -> None:
   [dim]e.g. do fix the failing test in tests/[/dim]
   [dim]Needs a tool-capable model (qwen2.5-coder:7b, llama3.1:8b, or API mode)[/dim]
 
+[bold cyan]Chat (default — OpenCode-style):[/bold cyan]
+  <any message>            →  handled by the default agent (tools + planning)
+  do <task>                →  same, explicit agent task (e.g. do X --agent explore)
+  ask <question>           →  fast RAG over the index (no tools), if indexed
+  [dim]Plain chat now calls tools on its own — no do prefix needed.[/dim]
+
 [bold cyan]RAG / Code Analysis:[/bold cyan]
   index /path/to/project   →  index a local folder
   index status             →  show indexed files
   index clear              →  clear the index
-  <any question>           →  ask AI about indexed code
 
 [bold cyan]Dev Tools:[/bold cyan]
   audit                    →  AI code review (git diff)
