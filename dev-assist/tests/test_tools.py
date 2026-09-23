@@ -474,3 +474,76 @@ class TestSkill:
         result = execute_tool("skill", {"name": "demo"}, d)
         assert "Demo skill" in result
         assert "scripts" in result
+
+
+class TestRootConfinement:
+    """Tools must stay inside the launched project root — otherwise the agent
+    lists/edits folders it was never started in (e.g. the model guessing
+    absolute paths like ~/Desktop/Review_Bin/...)."""
+
+    def _mkworkdir(self, tmp_path):
+        d = str(tmp_path)
+        os.makedirs(os.path.join(d, "sub"), exist_ok=True)
+        with open(os.path.join(d, "sub", "keep.txt"), "w") as f:
+            f.write("inside")
+        return d
+
+    def test_list_dir_inside_root_allowed(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        assert "keep.txt" in execute_tool("list_dir", {"path": "sub"}, d)
+
+    def test_list_dir_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        result = execute_tool("list_dir", {"path": ".."}, d)
+        assert "outside the project root" in result
+
+    def test_read_file_absolute_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        outside = os.path.join(os.path.dirname(d), "secret.txt")
+        with open(outside, "w") as f:
+            f.write("secret")
+        result = execute_tool("read_file", {"path": outside}, d)
+        assert "outside the project root" in result
+
+    def test_absolute_path_inside_root_allowed(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        inside = os.path.join(d, "sub", "keep.txt")
+        assert "inside" in execute_tool("read_file", {"path": inside}, d)
+
+    def test_glob_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        assert "outside the project root" in execute_tool("glob", {"path": "..", "pattern": "*"}, d)
+
+    def test_grep_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        assert "outside the project root" in execute_tool("grep", {"path": "..", "pattern": "x"}, d)
+
+    def test_write_file_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        outside = os.path.join(os.path.dirname(d), "escaped.txt")
+        result = execute_tool("write_file", {"path": "../escaped.txt", "content": "x"}, d)
+        assert "outside the project root" in result
+        assert not os.path.exists(outside)
+
+    def test_edit_file_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        result = execute_tool(
+            "edit_file",
+            {"path": "../../etc/hostname", "old_string": "x", "new_string": "y"},
+            d,
+        )
+        assert "outside the project root" in result
+
+    def test_bash_workdir_escape_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = self._mkworkdir(tmp_path)
+        result = execute_tool("bash", {"command": "pwd", "workdir": ".."}, d)
+        assert "outside the project root" in result

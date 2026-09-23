@@ -549,19 +549,35 @@ TOOL_SCHEMAS: list[dict] = [
 # ─────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
+class PathGuardError(ValueError):
+    """Raised when a tool-resolved path escapes the project root."""
+
+
 def _resolve(path: str | None, workdir: str) -> str:
     if not path:
         return workdir
+    root = os.path.abspath(workdir)
     path = os.path.expanduser(path)
     if not os.path.isabs(path):
         path = os.path.join(workdir, path)
-    return os.path.normpath(path)
+    resolved = os.path.normpath(path)
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise PathGuardError(
+            f"the path '{path}' is outside the project root ({root}). "
+            "Only operate inside the directory dev-assist was launched in."
+        )
+    return resolved
 
 
 def resolve_path(path: str | None, workdir: str) -> str:
     """Public wrapper so callers (e.g. the agent loop, for change tracking)
-    can resolve a tool's path argument the same way the tools themselves do."""
-    return _resolve(path, workdir)
+    can resolve a tool's path argument the same way the tools themselves do.
+    Deliberately non-raising: this path is only used to snapshot/record a
+    file AFTER a write tool has already validated and acted on it."""
+    try:
+        return _resolve(path, workdir)
+    except PathGuardError:
+        return os.path.normpath(os.path.expanduser(path)) if path else workdir
 
 
 def _walk(root: str):
@@ -726,7 +742,10 @@ def _default_question_handler(questions: list[dict]) -> list[list[str] | None]:
 # Tool implementations — read/write/edit/search
 # ─────────────────────────────────────────────────────────────────────
 def _tool_read_file(args: dict, workdir: str) -> str:
-    filepath = _resolve(args.get("path"), workdir)
+    try:
+        filepath = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     offset = max(1, int(args.get("offset") or 1))
     limit = int(args.get("limit") or DEFAULT_READ_LIMIT)
     if limit < 1:
@@ -832,7 +851,10 @@ def _tool_read_file(args: dict, workdir: str) -> str:
 
 
 def _tool_list_dir(args: dict, workdir: str) -> str:
-    path = _resolve(args.get("path"), workdir)
+    try:
+        path = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     if not os.path.isdir(path):
         return f"Error: not a directory: {path}"
     rows = _entry_rows(path)
@@ -843,7 +865,10 @@ def _tool_glob(args: dict, workdir: str) -> str:
     import glob as _glob
 
     pattern = args.get("pattern") or "*"
-    root = _resolve(args.get("path"), workdir)
+    try:
+        root = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     if not os.path.isdir(root):
         return f"Error: glob path must be a directory: {root}"
 
@@ -872,7 +897,10 @@ def _tool_grep(args: dict, workdir: str) -> str:
     pattern = args.get("pattern")
     if not pattern:
         return "Error: pattern is required."
-    root = _resolve(args.get("path"), workdir)
+    try:
+        root = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     include = args.get("include")
 
     try:
@@ -919,7 +947,10 @@ def _tool_grep(args: dict, workdir: str) -> str:
 
 
 def _tool_write_file(args: dict, workdir: str) -> str:
-    path = _resolve(args.get("path"), workdir)
+    try:
+        path = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     content = args.get("content")
     if content is None:
         return "Error: content is required."
@@ -945,7 +976,10 @@ def _tool_write_file(args: dict, workdir: str) -> str:
 
 
 def _tool_edit_file(args: dict, workdir: str) -> str:
-    path = _resolve(args.get("path"), workdir)
+    try:
+        path = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     old = args.get("old_string")
     new = args.get("new_string")
     replace_all = bool(args.get("replace_all"))
@@ -998,7 +1032,10 @@ def _tool_bash(args: dict, workdir: str) -> str:
         return f"Error: Invalid timeout value: {timeout}. Timeout must be a positive number."
     timeout = timeout if timeout > 0 else BASH_TIMEOUT
 
-    cwd = _resolve(args.get("workdir"), workdir) if args.get("workdir") else workdir
+    try:
+        cwd = _resolve(args.get("workdir"), workdir) if args.get("workdir") else workdir
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     if not os.path.isdir(cwd):
         return f"Error: workdir is not a directory: {cwd}"
 
@@ -1107,7 +1144,10 @@ def _run_tests_in(folder: str, cmd: list[str], label: str) -> str:
 
 
 def _tool_run_tests(args: dict, workdir: str) -> str:
-    folder = _resolve(args.get("path"), workdir)
+    try:
+        folder = _resolve(args.get("path"), workdir)
+    except PathGuardError as exc:
+        return f"Error: {exc}"
     if not os.path.isdir(folder):
         return f"Error: not a directory: {folder}"
 
@@ -1472,6 +1512,15 @@ def _tool_apply_patch(args: dict, workdir: str) -> str:
         return "Error: patchText is required."
 
     workdir = store.guess_workdir(workdir)
+
+    root = os.path.abspath(workdir)
+    for rel in patchlib.hunk_paths(patch_text):
+        full = os.path.normpath(os.path.join(root, rel))
+        if full != root and not full.startswith(root + os.sep):
+            return (
+                f"Error: the patch touches a file outside the project root "
+                f"({root}): {rel!r}"
+            )
 
     from core import change_tracker
 
