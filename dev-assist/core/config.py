@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from pydantic import BaseModel, Field, field_validator, ValidationError
+    from pydantic import BaseModel, Field, ValidationError, field_validator
     _PYDANTIC = True
 except ImportError:
     _PYDANTIC = False
@@ -84,7 +84,7 @@ if _PYDANTIC:
         ]
 
     @staticmethod
-    def _provider_defaults() -> dict[str, "ProviderProfile"]:
+    def _provider_defaults() -> dict[str, ProviderProfile]:
         from core import providers as _providers
         return {
             pid: ProviderProfile.model_validate(p)
@@ -113,7 +113,7 @@ if _PYDANTIC:
     class AppConfig(BaseModel):
         ai_engine: str = Field(default="ollama", pattern="^(ollama|api)$")
         active_provider: str = Field(default="ollama", description="Provider id from core.providers.PROVIDERS")
-        providers: dict[str, "ProviderProfile"] = Field(default_factory=_provider_defaults)
+        providers: dict[str, ProviderProfile] = Field(default_factory=_provider_defaults)
         ollama_model: str = "qwen2.5-coder:7b"
         ollama_available_models: list[str] = [
             "qwen2.5-coder:7b",
@@ -125,6 +125,11 @@ if _PYDANTIC:
         api_engine: ApiEngineConfig = Field(default_factory=ApiEngineConfig)
         tunnel: TunnelConfig = Field(default_factory=TunnelConfig)
         audit: AuditConfig = Field(default_factory=AuditConfig)
+        commands: dict[str, dict] = Field(
+            default_factory=dict,
+            description="Slash commands (/name): {template, description, subtask} "
+                        "with $ARGUMENTS / $1..$N placeholders",
+        )
 
         def get_active_api_key(self) -> str:
             """Return API key from env var first, then config (never writes back)."""
@@ -133,7 +138,7 @@ if _PYDANTIC:
                 return env_key
             return self.api_engine.api_key
 
-        def get_provider(self, provider: str | None = None) -> "ProviderProfile":
+        def get_provider(self, provider: str | None = None) -> ProviderProfile:
             """Resolve a provider profile (defaults to the active one)."""
             from core import providers as _providers
             pid = provider or _providers.active_provider(self)
@@ -154,7 +159,7 @@ if _PYDANTIC:
 
 # ── Load / Save ──────────────────────────────────────────────────────────────
 
-def load_config() -> "AppConfig | dict[str, Any]":
+def load_config() -> AppConfig | dict[str, Any]:
     """
     Load and validate config. Returns AppConfig if pydantic is available,
     else a plain dict.
@@ -199,7 +204,7 @@ def load_config() -> "AppConfig | dict[str, Any]":
             return AppConfig.model_construct()
 
 
-def save_config(data: "AppConfig | dict[str, Any]") -> None:
+def save_config(data: AppConfig | dict[str, Any]) -> None:
     """
     Persist config. Strips plaintext api_key if set via env var.
     """
