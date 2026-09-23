@@ -21,6 +21,44 @@ def store(tmp_path, monkeypatch):
     ss.reset_state()
 
 
+@pytest.fixture
+def fake_cfg(tmp_path, monkeypatch):
+    """In-memory config replacements so /provider and /model never touch the
+    real settings.json. Also pins the live-model lookup to the catalog so the
+    interactive pickers are deterministic and offline."""
+    from core import config as core_config
+    from core import providers as _providers
+
+    raw = {
+        "active_provider": "ollama",
+        "ai_engine": "ollama",
+        "providers": _providers.provider_defaults_raw(),
+    }
+    saved: dict = {}
+
+    def _fake_load():
+        return dict(raw)
+
+    def _fake_save(data):
+        if hasattr(data, "model_dump"):
+            saved.update(data.model_dump())
+        else:
+            saved.update(dict(data))
+        raw.clear()
+        raw.update(saved)
+
+    monkeypatch.setattr(core_config, "load_config", _fake_load)
+    monkeypatch.setattr(core_config, "save_config", _fake_save)
+    monkeypatch.setattr(
+        "core.ai.resolve_provider_live_models",
+        lambda pid, **k: list(_providers.PROVIDERS.get(pid, {}).get("models", [])),
+    )
+    monkeypatch.setenv("DEV_ASSIST_DATA_DIR", str(tmp_path))
+    ss.reset_state()
+    yield raw
+    ss.reset_state()
+
+
 class TestParseArguments:
     def test_simple_words(self):
         assert slash.parse_arguments("foo bar baz") == ["foo", "bar", "baz"]
@@ -216,3 +254,116 @@ class TestAgentsAndCompact:
         assert msgs[-1].agent == "compaction"
         assert "SUMMARIZED_NOW" in msgs[-1].content
         assert "Compacted" in capsys.readouterr().out
+
+
+class TestProviderCommand:
+    def test_registered(self):
+        cmds = slash.list_commands("/tmp")
+        assert cmds["provider"].source == "builtin"
+        assert cmds["provider"].handler is not None
+        assert "provider" in slash.command_names("/tmp")
+
+    def test_switch(self, fake_cfg, capsys):
+        assert slash.execute("provider", "groq", "/tmp") is True
+        assert fake_cfg["active_provider"] == "groq"
+        assert fake_cfg["ai_engine"] == "api"
+        assert "Groq" in capsys.readouterr().out
+
+    def test_switch_uses_catalog_id_case_insensitive(self, fake_cfg, capsys):
+        assert slash.execute("provider", "Anthropic", "/tmp") is True
+        assert fake_cfg["active_provider"] == "anthropic"
+        assert fake_cfg["ai_engine"] == "api"
+
+    def test_switch_back_to_ollama_sets_legacy_engine(self, fake_cfg, capsys):
+        fake_cfg["active_provider"] = "groq"
+        assert slash.execute("provider", "ollama", "/tmp") is True
+        assert fake_cfg["active_provider"] == "ollama"
+        assert fake_cfg["ai_engine"] == "ollama"
+
+    def test_unknown_provider_rejected(self, fake_cfg, capsys):
+        assert slash.execute("provider", "nope", "/tmp") is True
+        assert fake_cfg["active_provider"] == "ollama"
+        assert "Unknown provider" in capsys.readouterr().out
+
+    def test_list_shows_providers(self, fake_cfg, capsys):
+        assert slash.execute("provider", "list", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "ollama" in out
+        assert "groq" in out
+        assert "← active" in out
+
+    def test_no_args_shows_current_and_picker_cancel(self, fake_cfg, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "")
+        assert slash.execute("provider", "", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "ollama" in out
+        assert "Cancelled." in out
+        assert fake_cfg["active_provider"] == "ollama"
+
+    def test_picker_switches_by_number(self, fake_cfg, monkeypatch, capsys):
+        vals = iter(["2"])  # index 1 in PROVIDER_ORDER → openai
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
+        assert slash.execute("provider", "", "/tmp") is True
+        assert fake_cfg["active_provider"] == "openai"
+
+
+class TestModelCommand:
+    def test_registered(self):
+        cmds = slash.list_commands("/tmp")
+        assert cmds["model"].source == "builtin"
+        assert cmds["model"].handler is not None
+
+    def test_set_form(self, fake_cfg, capsys):
+        assert slash.execute("model", "set gpt-4o", "/tmp") is True
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "gpt-4o"
+        assert "ollama/gpt-4o" in capsys.readouterr().out
+
+    def test_direct_form(self, fake_cfg, capsys):
+        assert slash.execute("model", "llama3.1:8b", "/tmp") is True
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "llama3.1:8b"
+        assert "ollama/llama3.1:8b" in capsys.readouterr().out
+
+    def test_set_multiword_model_name(self, fake_cfg, capsys):
+        assert slash.execute("model", "set anthropic/claude-sonnet-4-5", "/tmp") is True
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "anthropic/claude-sonnet-4-5"
+
+    def test_set_sets_active_provider(self, fake_cfg, capsys):
+        fake_cfg["active_provider"] = "groq"
+        assert slash.execute("model", "set llama-3.3-70b-versatile", "/tmp") is True
+        assert fake_cfg["providers"]["groq"]["default_model"] == "llama-3.3-70b-versatile"
+        assert "groq/llama-3.3-70b-versatile" in capsys.readouterr().out
+
+    def test_list(self, fake_cfg, capsys):
+        assert slash.execute("model", "list", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "qwen2.5-coder:7b" in out
+        assert "← active" in out
+
+    def test_list_specific_provider(self, fake_cfg, capsys):
+        assert slash.execute("model", "list groq", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "llama-3.3-70b-versatile" in out
+
+    def test_set_requires_name(self, fake_cfg, capsys):
+        assert slash.execute("model", "set", "/tmp") is True
+        assert "Usage:" in capsys.readouterr().out
+
+    def test_no_args_shows_current_and_picker_cancel(self, fake_cfg, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "")
+        assert slash.execute("model", "", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "Active model" in out
+        assert "Cancelled." in out
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "qwen2.5-coder:7b"
+
+    def test_picker_switches_model_by_number(self, fake_cfg, monkeypatch, capsys):
+        vals = iter(["2"])  # qwen2.5-coder:3b is 2nd catalog model for ollama
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
+        assert slash.execute("model", "", "/tmp") is True
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "qwen2.5-coder:3b"
+
+    def test_picker_switches_by_exact_name(self, fake_cfg, monkeypatch, capsys):
+        vals = iter(["codellama:7b"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
+        assert slash.execute("model", "", "/tmp") is True
+        assert fake_cfg["providers"]["ollama"]["default_model"] == "codellama:7b"

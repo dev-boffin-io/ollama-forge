@@ -14,16 +14,21 @@ Improvements:
 from __future__ import annotations
 
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from core.providers import (
     ProviderError,
-    active_provider as _active_provider,
     make_provider,
+)
+from core.providers import (
+    active_provider as _active_provider,
+)
+from core.providers import (
     provider_key as _provider_key,
+)
+from core.providers import (
     provider_profile as _provider_profile,
 )
-
 
 # ── Config helpers ─────────────────────────────────────────────────────────
 
@@ -98,6 +103,72 @@ def get_provider(cfg=None, provider: str | None = None, api_key: str = ""):
     profile = _providers.provider_profile(cfg, pid)
     key = _providers.provider_key(cfg, pid, explicit=api_key)
     return make_provider(pid, profile, key)
+
+
+# ── Provider / model switching (shared by the REPL, slash commands, palette) ─
+
+def _cfg_dict(cfg=None) -> dict:
+    """Config as a plain dict (mutating-friendly for save_config)."""
+    cfg = cfg if cfg is not None else _load_config()
+    if hasattr(cfg, "model_dump"):
+        return cfg.model_dump()
+    return dict(cfg)
+
+
+def known_provider_ids() -> list[str]:
+    """All switchable provider ids in display order."""
+    from core import providers as _providers
+    return list(_providers.PROVIDER_ORDER)
+
+
+def resolve_provider_live_models(pid: str, cfg=None) -> list[str]:
+    """
+    Live model list for a provider (network + env aware), falling back to the
+    configured/catalogue list so an interactive picker always has options.
+    Never raises — on any transport problem the configured list is used.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    try:
+        models = get_provider(cfg, provider=pid).list_models()
+        if models:
+            return models
+    except Exception:
+        pass
+    return [m for m in (_provider_profile(cfg, pid).get("models") or []) if m]
+
+
+def switch_provider(pid: str) -> None:
+    """
+    Persist the active provider. Raises ProviderError for unknown ids.
+    Effective from the very next message (config is re-read per request).
+    """
+    from core import providers as _providers
+    if pid not in _providers.PROVIDERS:
+        raise ProviderError(
+            f"Unknown provider {pid!r}. Known providers: "
+            + ", ".join(_providers.PROVIDER_ORDER)
+        )
+    cfg = _cfg_dict()
+    cfg["active_provider"] = pid
+    cfg["ai_engine"] = "ollama" if pid == "ollama" else "api"  # legacy mirror
+    save_config(cfg)
+
+
+def set_provider_model(model_name: str, provider: str | None = None) -> str:
+    """
+    Persist a default model for a provider (defaults to the active one).
+    Returns 'provider/model' so callers can print a confirmation.
+    """
+    from core import providers as _providers
+    cfg = _cfg_dict()
+    pid = provider or _providers.active_provider(cfg)
+    if pid not in _providers.PROVIDERS:
+        raise ProviderError(f"Unknown provider {pid!r}.")
+    profile = dict(cfg.setdefault("providers", {}).get(pid) or {})
+    profile["default_model"] = model_name
+    cfg["providers"][pid] = profile
+    save_config(cfg)
+    return f"{pid}/{model_name}"
 
 
 # ── Sync CLI ───────────────────────────────────────────────────────────────
