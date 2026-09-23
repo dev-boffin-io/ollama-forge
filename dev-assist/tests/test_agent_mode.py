@@ -61,3 +61,59 @@ class TestParseRunArgs:
         task, flags = _parse_run_args("do make an agent for tests")
         assert flags["agent"] is None
         assert task == "do make an agent for tests"
+
+
+class TestRunTaskFinalAnswer:
+    def test_final_answer_is_printed(self, monkeypatch):
+        """The agent's final answer must reach the terminal (it was dropped).
+        The sub-task blow-by-blow streamed, but the finished synthesis never
+        printed — so plain chat showed work without the actual answer."""
+        import io
+
+        from rich.console import Console
+
+        import modules.agent_mode as am
+
+        buf = io.StringIO()
+        monkeypatch.setattr(am, "_console", Console(file=buf))
+
+        class FakeTracker:
+            def has_changes(self):
+                return False
+
+        monkeypatch.setattr("core.change_tracker.get_tracker", lambda: FakeTracker())
+        monkeypatch.setattr(am, "_record_turn", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "core.agent.run_agent", lambda *a, **k: "FINAL ANSWER"
+        )
+
+        result = am.run_task("refactor the widget", flags={"auto": True})
+
+        assert result == "FINAL ANSWER"
+        assert "FINAL ANSWER" in buf.getvalue()
+
+    def test_final_answer_inline_markup_not_mangled(self, monkeypatch):
+        """Model output may contain brackets/backticks — print it as plain text."""
+        import io
+
+        from rich.console import Console
+
+        import modules.agent_mode as am
+
+        buf = io.StringIO()
+        monkeypatch.setattr(am, "_console", Console(file=buf))
+
+        class FakeTracker:
+            def has_changes(self):
+                return False
+
+        monkeypatch.setattr("core.change_tracker.get_tracker", lambda: FakeTracker())
+        monkeypatch.setattr(am, "_record_turn", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "core.agent.run_agent",
+            lambda *a, **k: "Use `[bold] tags` like [x]",
+        )
+
+        am.run_task("task", flags={"auto": True})
+
+        assert "Use `[bold] tags` like [x]" in buf.getvalue()
