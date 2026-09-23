@@ -35,7 +35,9 @@ def _print(msg: str) -> None:
 _TOOL_ICONS = {
     "read_file": "📖", "list_dir": "📁", "glob": "🔍", "grep": "🔎",
     "write_file": "📝", "edit_file": "✏️", "bash": "⚙️",
-    "run_tests": "🧪", "web_search": "🌐",
+    "run_tests": "🧪", "web_search": "🌐", "web_fetch": "🕸️",
+    "todowrite": "✅", "question": "❓", "task": "🤖", "skill": "📚",
+    "apply_patch": "🧩",
 }
 
 
@@ -105,7 +107,7 @@ def _preview_edit(args: dict, workdir: str) -> None:
     old, new = args.get("old_string", ""), args.get("new_string", "")
 
     try:
-        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(full_path, encoding="utf-8", errors="replace") as f:
             before = f.read()
     except Exception:
         # File doesn't exist / unreadable — fall back to a bare fragment diff
@@ -116,8 +118,8 @@ def _preview_edit(args: dict, workdir: str) -> None:
         # Same ambiguity edit_file itself will reject; just show the raw
         # intent so the user can still make an informed call.
         _render_diff(f"--- intended change ({'not found' if old not in before else 'not unique'} in file) ---\n"
-                      + "".join(f"-{l}\n" for l in old.splitlines())
-                      + "".join(f"+{l}\n" for l in new.splitlines()), path)
+                      + "".join(f"-{ln}\n" for ln in old.splitlines())
+                      + "".join(f"+{ln}\n" for ln in new.splitlines()), path)
         return
 
     after = before.replace(old, new, 1)
@@ -130,13 +132,42 @@ def _preview_write(args: dict, workdir: str) -> None:
     new = args.get("content", "")
 
     try:
-        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(full_path, encoding="utf-8", errors="replace") as f:
             before = f.read()
     except Exception:
         _print(f"  [green]new file[/green] {path} ({len(new.splitlines())} lines)")
         return
 
     _render_diff(_unified_diff(before, new, path), path)
+
+
+def _preview_apply_patch(args: dict, workdir: str) -> None:
+    """Preview an apply_patch call: show which files it will touch and the raw diff."""
+    patch_text = args.get("patch_text", "")
+    if not patch_text:
+        _print("  [yellow]apply_patch: no patch text supplied[/yellow]")
+        return
+
+    from core.toolimpl import patch as patchlib
+
+    try:
+        hunks = patchlib.parse_patch(patch_text)
+    except patchlib.PatchError as exc:
+        _print(f"  [red]apply_patch: invalid patch ({exc})[/red]")
+        return
+
+    for h in hunks:
+        if h.type == "add":
+            _print(f"  [green]add[/green]    [bold]{h.path}[/bold]")
+        elif h.type == "delete":
+            _print(f"  [red]delete[/red] [bold]{h.path}[/bold]"
+                   + (f" [dim]→ {h.move_path}[/dim]" if h.move_path else ""))
+        else:
+            _print(f"  [yellow]update[/yellow]  [bold]{h.path}[/bold]"
+                   + (f" [dim]→ {h.move_path}[/dim]" if h.move_path else ""))
+
+    shown = "\n".join(ln for ln in patch_text.splitlines() if ln.startswith((" ", "+", "-", "@@")) and not ln.startswith("+++") and not ln.startswith("---"))
+    _render_diff(shown, "patch")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -166,6 +197,8 @@ class Approver:
             _preview_edit(args, self.workdir)
         elif name == "write_file":
             _preview_write(args, self.workdir)
+        elif name == "apply_patch":
+            _preview_apply_patch(args, self.workdir)
         elif name == "bash":
             _print(f"  [yellow]run[/yellow] [bold]{args.get('command', '')}[/bold]")
 
@@ -267,15 +300,19 @@ def run(text: str) -> None:
     _print(f"[bold cyan]🤖 agent[/bold cyan] [dim]{workdir}[/dim]")
     _print(f"[dim]task:[/dim] {task}\n")
 
+    from core import tui_status
     from core.agent import run_agent
     from core.change_tracker import get_tracker
-    from core import tui_status
 
     if flags["auto"]:
         # Fully autonomous: skip the interactive Approver entirely and use the
         # "approve everything" policy. Changes are still snapshotted by the
-        # change tracker, so `undo` works exactly as it always has.
+        # change tracker, so `undo` works exactly as it always has. The
+        # question tool is also skipped so the agent can't stall waiting for
+        # input it will never get (it receives "Unanswered" instead).
         from core.agent import approve_everything
+        from core.tools import set_question_auto_skip
+        set_question_auto_skip(True)
         if _console:
             _console.print(Panel(
                 "[red]Running WITHOUT approval prompts.[/red]\n"

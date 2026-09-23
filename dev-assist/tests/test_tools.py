@@ -2,13 +2,10 @@
 Tests for the run_tests and web_search tools in core/tools.py.
 """
 
-import io
 import json
 import os
 import sys
 import urllib.error
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -73,8 +70,8 @@ class TestRunTests:
         assert "no test framework detected" in result
 
     def test_path_arg_respected(self, tmp_path):
-        from core.tools import execute_tool, resolve_path
-        sub = os.path.join(str(tmp_path), "sub")
+        from core.tools import execute_tool
+        os.path.join(str(tmp_path), "sub")
         with open(os.path.join(str(tmp_path), "package.json"), "w") as f:
             json.dump({"scripts": {"test": "node no-such-file.js"}}, f)
         result = execute_tool("run_tests", {"path": "sub"}, str(tmp_path))
@@ -124,7 +121,6 @@ class TestWebSearch:
         # The config has no web_search section, but we can exercise the
         # OpenAI-compatible branch by patching the resolver + client.
         from core.tools import _tool_web_search
-        import core.tools as tools
 
         def fake_config():
             return {"web_search": {"api_key": "k", "url": "http://x/search"}}
@@ -144,3 +140,337 @@ class TestWebSearch:
         result = _tool_web_search({"query": "q"}, str(tmp_path))
         assert "T1" in result
         assert calls["url"] == "http://x/search"
+
+class TestReadFile:
+    def test_offset_limit_and_footer(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        p = os.path.join(d, "a.txt")
+        with open(p, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 6)))
+        result = execute_tool("read_file", {"path": "a.txt", "offset": 2, "limit": 2}, d)
+        assert "2: line 2" in result
+        assert "3: line 3" in result
+        assert "1: line 1" not in result
+        assert "Showing lines 2-3 of 5" in result
+
+    def test_empty_file(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "empty.txt"), "w"):
+            pass
+        result = execute_tool("read_file", {"path": "empty.txt"}, d)
+        assert "total 0 lines" in result
+
+    def test_binary_file_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "blob.bin"), "wb") as f:
+            f.write(b"\x00\x01\x02\x03binary")
+        result = execute_tool("read_file", {"path": "blob.bin"}, d)
+        assert "binary" in result.lower()
+
+    def test_offset_out_of_range(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "a.txt"), "w") as f:
+            f.write("one\n")
+        result = execute_tool("read_file", {"path": "a.txt", "offset": 10}, d)
+        assert "out of range" in result
+
+    def test_missing_file(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("read_file", {"path": "nope.txt"}, str(tmp_path))
+        assert "File not found" in result
+
+
+class TestWriteEdit:
+    def test_write_creates_then_overwrites(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        r1 = execute_tool("write_file", {"path": "x.txt", "content": "a\nb\n"}, d)
+        assert "Created" in r1
+        r2 = execute_tool("write_file", {"path": "x.txt", "content": "c\n"}, d)
+        assert "Overwrote" in r2
+        with open(os.path.join(d, "x.txt")) as f:
+            assert f.read() == "c\n"
+
+    def test_write_preserves_bom(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        p = os.path.join(d, "bom.txt")
+        with open(p, "wb") as f:
+            f.write(b"\xef\xbb\xbftext")
+        execute_tool("write_file", {"path": "bom.txt", "content": "new\n"}, d)
+        with open(p, "rb") as f:
+            assert f.read() == b"\xef\xbb\xbfnew\n"
+
+    def test_edit_exact_and_replace_all(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        p = os.path.join(d, "e.py")
+        with open(p, "w") as f:
+            f.write("x = 1\ny = x\n")
+        result = execute_tool("edit_file", {
+            "path": "e.py", "old_string": "y = x", "new_string": "y = x + 1",
+        }, d)
+        assert "Edit applied successfully." in result
+        with open(p) as f:
+            assert f.read() == "x = 1\ny = x + 1\n"
+
+        p2 = os.path.join(d, "r.py")
+        with open(p2, "w") as f:
+            f.write("a=1\na=1\n")
+        execute_tool("edit_file", {
+            "path": "r.py", "old_string": "a=1", "new_string": "a=2", "replace_all": True,
+        }, d)
+        with open(p2) as f:
+            assert f.read() == "a=2\na=2\n"
+
+    def test_edit_ambiguous_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "m.txt"), "w") as f:
+            f.write("same\nsame\n")
+        result = execute_tool("edit_file", {
+            "path": "m.txt", "old_string": "same", "new_string": "other",
+        }, d)
+        assert "multiple matches" in result.lower()
+
+    def test_edit_identifies_missing_string(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "n.txt"), "w") as f:
+            f.write("hello\n")
+        result = execute_tool("edit_file", {
+            "path": "n.txt", "old_string": "nope", "new_string": "x",
+        }, d)
+        assert "could not find" in result.lower()
+
+    def test_edit_fuzzy_whitespace_match(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        p = os.path.join(d, "i.py")
+        with open(p, "w") as f:
+            f.write("def f():\n    return 1\n")
+        result = execute_tool("edit_file", {
+            # extra indentation vs. the file's 4 spaces — should still match
+            "path": "i.py",
+            "old_string": "        return 1",
+            "new_string": "        return 2",
+        }, d)
+        assert "Edit applied successfully." in result
+        with open(p) as f:
+            assert "    return 2" in f.read()
+
+
+class TestGlobGrep:
+    def test_glob_finds_files(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        for rel in ("a.py", "sub/b.py", "c.md"):
+            fp = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w") as f:
+                f.write("x")
+        result = execute_tool("glob", {"pattern": "**/*.py"}, d)
+        assert "a.py" in result
+        assert "b.py" in result
+        assert "c.md" not in result
+        # results are absolute paths
+        first = result.splitlines()[0]
+        assert os.path.isabs(first)
+
+    def test_glob_no_matches(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("glob", {"pattern": "**/*.rust"}, str(tmp_path))
+        assert "No files found" in result
+
+    def test_grep_finds_pattern(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "s.py"), "w") as f:
+            f.write("import os\ndef todo():\n    pass\n")
+        result = execute_tool("grep", {"pattern": r"def\s+\w+"}, d)
+        assert "Found 1 match" in result
+        assert "Line 2" in result
+        assert "def todo()" in result
+
+    def test_grep_invalid_regex(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("grep", {"pattern": "([", }, str(tmp_path))
+        assert "invalid regex" in result
+
+    def test_grep_include_filter(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        with open(os.path.join(d, "hit.py"), "w") as f:
+            f.write("needle")
+        with open(os.path.join(d, "hit.txt"), "w") as f:
+            f.write("needle")
+        result = execute_tool("grep", {"pattern": "needle", "include": "*.py"}, d)
+        assert "hit.py" in result
+        assert "hit.txt" not in result
+
+
+class TestBash:
+    def test_runs_command_with_exit_code(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("bash", {"command": "echo hi"}, str(tmp_path))
+        assert "(exit 0)" in result
+        assert "hi" in result
+
+    def test_nonzero_exit_reported(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("bash", {"command": "echo oops && exit 3"}, str(tmp_path))
+        assert "(exit 3)" in result
+
+    def test_empty_command_error(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("bash", {}, str(tmp_path))
+        assert "command is required" in result
+
+
+class TestApplyPatch:
+    def test_add_update_delete(self, tmp_path):
+        from core import change_tracker
+        from core.tools import execute_tool
+        change_tracker.new_run()
+        d = str(tmp_path)
+        with open(os.path.join(d, "keep.txt"), "w") as f:
+            f.write("old line\n")
+        with open(os.path.join(d, "gone.txt"), "w") as f:
+            f.write("bye\n")
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Add File: new.txt\n"
+            "+hello\n"
+            "*** Update File: keep.txt\n"
+            "@@\n"
+            "-old line\n"
+            "+new line\n"
+            "*** Delete File: gone.txt\n"
+            "*** End Patch"
+        )
+        result = execute_tool("apply_patch", {"patch_text": patch_text}, d)
+        assert "Success" in result and "A new.txt" in result \
+            and "M keep.txt" in result and "D gone.txt" in result
+        with open(os.path.join(d, "new.txt")) as f:
+            assert f.read() == "hello\n"
+        with open(os.path.join(d, "keep.txt")) as f:
+            assert f.read() == "new line\n"
+        assert not os.path.exists(os.path.join(d, "gone.txt"))
+
+    def test_invalid_patch_reports_error(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("apply_patch", {"patch_text": "no markers here"}, str(tmp_path))
+        assert "Error" in result
+
+    def test_missing_patch_text(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("apply_patch", {}, str(tmp_path))
+        assert "patchText is required" in result
+
+
+class TestTodoWrite:
+    def test_set_and_render(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("todowrite", {
+            "todos": [
+                {"content": "first", "status": "completed"},
+                {"content": "second", "status": "pending"},
+            ]
+        }, str(tmp_path))
+        assert '"first"' in result
+        assert '"completed"' in result
+        assert "(1 todo(s) not yet completed)" in result
+
+    def test_invalid_todos(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("todowrite", {"todos": "not a list"}, str(tmp_path))
+        assert "must be an array" in result
+
+
+class TestQuestion:
+    def test_auto_skip_returns_unanswered(self, tmp_path, monkeypatch):
+        from core.tools import execute_tool, set_question_auto_skip
+        set_question_auto_skip(True)
+        try:
+            result = execute_tool("question", {"questions": [
+                {"question": "pick one", "options": [{"label": "a"}]}
+            ]}, str(tmp_path))
+        finally:
+            set_question_auto_skip(False)
+        assert "Unanswered" in result
+
+    def test_no_options_prompts_error(self, tmp_path, monkeypatch):
+        from core.tools import execute_tool
+        result = execute_tool("question", {"questions": [
+            {"question": "no opts here", "options": []}
+        ]}, str(tmp_path))
+        assert "Error" in result
+
+
+class TestWebFetch:
+    class _FakeResp:
+        def __init__(self, body, content_type="text/html"):
+            self.body = body
+            self.headers = {"Content-Type": content_type}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *a, **k):
+            return self.body
+
+    def test_missing_url_error(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("web_fetch", {}, str(tmp_path))
+        assert "url is required" in result
+
+    def test_bad_scheme_rejected(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("web_fetch", {"url": "ftp://x"}, str(tmp_path))
+        assert "http:// or https://" in result
+
+    def test_markdown_conversion(self, tmp_path, monkeypatch):
+        from core.tools import execute_tool
+
+        def fake_urlopen(req, timeout):
+            return TestWebFetch._FakeResp(b"<html><body><h1>Title</h1><p>Bla.</p></body></html>")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        result = execute_tool("web_fetch", {"url": "https://example.com/"}, str(tmp_path))
+        assert "Title" in result
+        assert "Bla" in result
+
+    def test_plain_text_passthrough(self, tmp_path, monkeypatch):
+        from core.tools import execute_tool
+
+        def fake_urlopen(req, timeout):
+            return TestWebFetch._FakeResp(b"just text", content_type="text/plain")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        result = execute_tool("web_fetch", {"url": "https://example.com/x.txt"}, str(tmp_path))
+        assert "just text" in result
+
+
+class TestSkill:
+    def test_missing_skill_error(self, tmp_path):
+        from core.tools import execute_tool
+        result = execute_tool("skill", {"name": "nope"}, str(tmp_path))
+        assert "not found" in result
+
+    def test_skill_loaded_from_workdir(self, tmp_path):
+        from core.tools import execute_tool
+        d = str(tmp_path)
+        os.makedirs(os.path.join(d, "skills", "demo", "scripts"), exist_ok=True)
+        with open(os.path.join(d, "skills", "demo", "SKILL.md"), "w") as f:
+            f.write("# Demo skill\\n\\nRun install.sh and report back.\\n")
+        result = execute_tool("skill", {"name": "demo"}, d)
+        assert "Demo skill" in result
+        assert "scripts" in result
