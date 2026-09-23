@@ -235,9 +235,11 @@ def _start_cli(resume_spec: bool | str | None = None) -> None:
                 handle_input(user_input)
             finally:
                 _sys.stdout = _old_stdout
+            # Capture is used ONLY for session history — output was already
+            # streamed live through the tee, so re-printing here would double
+            # every response.
             _out = _buf.getvalue()
             if _out:
-                print(_out, end="")
                 try:
                     from core.cli_history import save as _cli_save
                     _cli_save("assistant", _out.strip())
