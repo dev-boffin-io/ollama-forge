@@ -33,16 +33,17 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from core import change_tracker
+from core.repo_map import build_repo_map
 from core.tools import (
     DESTRUCTIVE_TOOLS,
     TOOL_SCHEMAS,
     describe_call,
     execute_tool,
 )
-from core import change_tracker
-from core.repo_map import build_repo_map
 
 MAX_STEPS = 24             # per sub-task step budget
 MAX_SUBTASKS = 5           # how many sub-tasks a plan may contain
@@ -54,7 +55,12 @@ You have tools. Use them instead of guessing:
 - Explore with list_dir, glob, and grep before assuming where code lives.
 - Always read_file before you edit_file, so you can quote the original text exactly.
 - edit_file needs old_string to match the raw file exactly and appear exactly once. Never include the line-number prefixes that read_file adds.
+- Use apply_patch for multi-file edits, file moves, or additions/deletions in one call.
 - Use bash for builds, tests, and git — not for reading or editing files.
+- Use web_search and web_fetch to look up external info and read pages.
+- Use todowrite to track the remaining work on a long task, and task to delegate an isolated chunk to a subagent.
+- When you need a decision or preference from the user, use question instead of guessing.
+- Load reusable instructions with skill before proceeding when one applies.
 
 Work in small, verifiable steps. After changing code, check your work (run the test, re-read the file) rather than assuming it worked.
 
@@ -369,7 +375,7 @@ def _run_subtask(
 
                 if name in ("write_file", "edit_file") and not result.startswith("Error"):
                     try:
-                        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                        with open(file_path, encoding="utf-8", errors="replace") as f:
                             tracker.record(file_path, f.read())
                     except Exception:
                         pass
@@ -461,10 +467,11 @@ def run_agent(
         if on_event:
             on_event(kind, text)
 
-    from core.ai import _load_config, get_provider as _get_provider
+    from core.ai import _load_config
+    from core.ai import get_provider as _get_provider
     cfg = _load_config()
     provider = _get_provider(cfg)
-    model = provider.resolve_model()
+    provider.resolve_model()
 
     # ── Project layout ──
     # A compact repo map (file tree + top-level signatures) goes into the
