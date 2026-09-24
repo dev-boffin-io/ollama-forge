@@ -42,7 +42,7 @@ from core.agents import AgentSpec
 from core.repo_map import build_repo_map
 from core.tools import (
     DESTRUCTIVE_TOOLS,
-    TOOL_SCHEMAS,
+    all_tool_schemas,
     describe_call,
     execute_tool,
 )
@@ -147,7 +147,8 @@ def _message_text(message: Any) -> str:
 
 def _chat(provider, messages: list[dict], *, tools: bool = True) -> dict:
     """One non-streaming provider call in the agent loop."""
-    return provider.chat(messages, tools=TOOL_SCHEMAS if tools else None)
+    schemas = all_tool_schemas() if tools else None
+    return provider.chat(messages, tools=schemas)
 
 
 def _assistant_turn(message: Any, calls: list[tuple[str, str, dict]]) -> dict:
@@ -341,7 +342,7 @@ def _run_subtask(
         for call_id, name, args in calls:
             emit("tool", describe_call(name, args))
 
-            if name in DESTRUCTIVE_TOOLS and not approver(name, args):
+            if not approver(name, args):
                 reason = getattr(approver, "last_reason", None)
                 result = (
                     f"Denied by user: the {name} call was not approved"
@@ -493,6 +494,13 @@ def run_agent(
     system_content = spec.system_prompt.format(workdir=workdir)
     if extra_context.strip():
         system_content += "\n\n## Prior context\n" + extra_context.strip()
+    try:
+        from core.instructions import load_instructions
+        instructions_block = load_instructions(workdir)
+        if instructions_block:
+            system_content += "\n\n" + instructions_block
+    except Exception:
+        pass
     if map_block:
         system_content += "\n\n" + map_block
 

@@ -144,6 +144,29 @@ if _PYDANTIC:
             description="Agent routing: custom agents or overrides of built-ins "
                         "{name, description, system_prompt, read_only, uses_planning, hidden, mode}",
         )
+        theme: str = Field(
+            default="default",
+            description="UI theme preset: default, ocean, gruvbox, monokai, nord",
+        )
+        permissions: dict[str, dict] = Field(
+            default_factory=dict,
+            description="Tool permissions: {tool: {group, verdict}} — verdict " 
+                        "is allow | ask | deny; groups match by prefix (edit, "
+                        "bash, webfetch, read, task)",
+        )
+        autocommit: str = Field(
+            default="off",
+            description="Auto-commit after agent runs: off | ask | auto",
+        )
+        mcp_servers: dict[str, dict] = Field(
+            default_factory=dict,
+            description="MCP servers: {name: {command, args, env}} — stdio "
+                        "transports, spawned lazily by core.mcp",
+        )
+        lsp: dict[str, dict] = Field(
+            default_factory=dict,
+            description="LSP servers per language: {lang: {command, args, env}}",
+        )
 
         def get_active_api_key(self) -> str:
             """Return API key from env var first, then config (never writes back)."""

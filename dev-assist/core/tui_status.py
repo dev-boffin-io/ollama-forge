@@ -98,8 +98,22 @@ def render_bottom_toolbar():
         ("class:toolbar", f"📁 {cwd}"),
     ]
 
+    session_tag = _session_tag()
+    if session_tag:
+        fragments.append(("class:toolbar", f"   💬 {session_tag}"))
+
     activity = get_activity()
     if activity:
         fragments.append(("class:toolbar.activity", f"   ⏳ {activity}"))
 
     return fragments
+
+
+def _session_tag() -> str:
+    """Short id of the active persistent session ('' when unavailable)."""
+    try:
+        from core import session_store
+        sid = session_store.current_session_id()
+        return sid[:6] if sid else ""
+    except Exception:
+        return ""

@@ -16,7 +16,12 @@ This module ports that system onto dev-assist's REPL:
   /resume       resume a saved session  (/resume #2 or /resume <id>)
   /rename       rename the current session
   /delete       delete a saved session
+  /themes       switch the UI theme (interactive picker)
+  /theme        show / switch the theme: /theme list, /theme <name>
   /<config>     user commands from the `commands` section of settings.json
+  /<file>       commands from <workdir>/.dev-assist/commands/*.md and
+                ~/.config/dev-assist/commands/*.md (YAML frontmatter:
+                description, agent, subtask)
   /<skill>      any discovered skill, run as a command
 
 Template rendering ($1..$N, $ARGUMENTS, $N continuation semantics) mirrors
@@ -224,6 +229,7 @@ class CommandSpec:
     source: str  # "builtin" | "command" | "skill"
     template: str | None = None
     subtask: bool = False
+    agent: str | None = None
     handler: Callable[[CommandSpec, str, str], bool] | None = None
     hints: tuple[str, ...] = ()
 
@@ -348,13 +354,82 @@ def _skill_commands(workdir: str) -> dict[str, dict]:
     return out
 
 
+# ── Command files (.dev-assist/commands/*.md, ~/.config/dev-assist/commands/) ─
+
+_YAML_BOOL = {"1", "true", "yes", "on"}
+
+
+def _parse_command_file(text: str) -> dict:
+    """
+    Parse an opencode-style command markdown file: an optional YAML frontmatter
+    (---\nkey: value\n---) followed by the prompt template body. Frontmatter
+    keys: description, agent, subtask. Template variables ($1, $ARGUMENTS...)
+    are handled by the shared renderer.
+    """
+    body = text
+    meta: dict[str, str] = {}
+    stripped = text.lstrip("\ufeff")
+    if stripped.startswith("---"):
+        end = stripped.find("\n---", 3)
+        if end != -1:
+            front = stripped[3:end]
+            body = stripped[end + 4:].lstrip("\n")
+            for line in front.splitlines():
+                if ":" not in line:
+                    continue
+                key, _, val = line.partition(":")
+                meta[key.strip().lower()] = val.strip().strip('"').strip("'")
+    agent = str(meta.get("agent") or "").strip() or None
+    subtask = str(meta.get("subtask") or "").lower() in _YAML_BOOL
+    return {
+        "template": body.strip(),
+        "description": str(meta.get("description") or "").strip(),
+        "agent": agent,
+        "subtask": subtask,
+    }
+
+
+def _command_files(workdir: str) -> dict[str, dict]:
+    """Commands from markdown files: <workdir>/.dev-assist/commands/*.md then
+    ~/.config/dev-assist/commands/*.md. Later dirs win on name collisions."""
+    dirs: list[str] = []
+    import os as _os
+    repo_dir = _os.path.join(workdir, ".dev-assist", "commands")
+    home_dir = _os.path.join(_os.path.expanduser("~"), ".config", "dev-assist", "commands")
+    for d in (repo_dir, home_dir):
+        if _os.path.isdir(d):
+            dirs.append(d)
+
+    out: dict[str, dict] = {}
+    names: list[str] = []
+    for d in dirs:
+        for fn in _os.listdir(d):
+            if fn.endswith(".md") and fn not in names:
+                names.append(fn)
+    for fn in sorted(names):
+        for d in dirs:
+            path = _os.path.join(d, fn)
+            if not _os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            out[fn[:-3]] = _parse_command_file(text)
+            break  # first dir that has the file wins
+    return out
+
+
 # ── Handlers ─────────────────────────────────────────────────────────────────
 
 def _run_template(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
     """Execute a template command via the agent (init/review/config/skill)."""
     template = render_template(spec.template or "", raw_args, workdir)
     from modules.agent_mode import run_task
-    run_task(template, workdir=workdir)
+    flags = {"auto": False, "auto_yes": False, "verbose": False,
+             "agent": spec.agent, "output": "text"}
+    run_task(template, workdir=workdir, flags=flags)
     return True
 
 
@@ -514,6 +589,69 @@ def _cmd_compact(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
            f"({len(summary)} chars, message #{stored.id}).[/green]")
     _print("[dim](/resume <id> to see it, or just keep working — the next "
            "automatic run will pick it up as prior context.)[/dim]")
+    return True
+
+
+# ── Themes (opencode /themes parity) ─────────────────────────────────────────
+
+def _print_theme_table() -> None:
+    from core.theme import THEMES, get_theme
+    active = get_theme().name
+    _print("\n🎨 [bold]Themes:[/bold]\n")
+    for name, theme in THEMES.items():
+        marker = "  ✅ [dim]← active[/dim]" if name == active else ""
+        preview = f"[bold][{'█' * 8}][/bold]"
+        _print(f"  {name:<10} {theme.toolbar_bg} → {preview}{marker}")
+    _print("\n💡 Switch with [bold]/theme <name>[/bold]  (or [bold]/themes[/bold] to pick)\n")
+
+
+def _pick_theme() -> bool:
+    from core.theme import THEMES, set_theme
+    _print_theme_table()
+    names = list(THEMES.keys())
+    try:
+        choice = input("   pick a theme (name or number, Enter to cancel): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        _print("\nCancelled.")
+        return True
+    if not choice:
+        _print("Cancelled.")
+        return True
+    name = choice.lower()
+    if name.isdigit():
+        idx = int(name)
+        if not (1 <= idx <= len(names)):
+            _print(f"⚠️  No theme #{idx}.")
+            return True
+        name = names[idx - 1]
+    if not set_theme(name):
+        _print(f"⚠️  Unknown theme [bold]{choice}[/bold]. "
+               f"Known: {', '.join(names)}")
+        return True
+    _print(f"✅ Theme → [green]{name}[/green]  (new prompts/diffs use it right away)")
+    return True
+
+
+def _cmd_themes(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    """Switch UI theme: /themes, /theme list, /theme <name>."""
+    from core.theme import THEMES, get_theme, set_theme
+
+    args = parse_arguments(raw_args)
+    if not args:
+        _print(f"🎨 Active theme: [green]{get_theme().name}[/green]  "
+               f"([bold]/themes[/bold] to pick, [bold]/theme list[/bold] to see all)")
+        return _pick_theme()
+
+    sub = args[0].lower()
+    if sub == "list":
+        _print_theme_table()
+        return True
+    if sub in THEMES:
+        set_theme(sub)
+        _print(f"✅ Theme → [green]{sub}[/green]")
+        return True
+    _print(f"⚠️  Unknown theme [bold]{args[0]}[/bold]. Known: {', '.join(THEMES)}")
+    _print("   [bold]/themes[/bold] opens the interactive picker.")
     return True
 
 
@@ -755,6 +893,20 @@ def _builtin_specs() -> dict[str, CommandSpec]:
             source="builtin",
             handler=_cmd_compact,
         ),
+        "themes": CommandSpec(
+            name="themes",
+            description="switch the UI theme (interactive picker)",
+            source="builtin",
+            hints=("list", "<name>"),
+            handler=_cmd_themes,
+        ),
+        "theme": CommandSpec(
+            name="theme",
+            description="show / switch the UI theme: /theme list, /theme <name>",
+            source="builtin",
+            hints=("list", "<name>"),
+            handler=_cmd_themes,
+        ),
         "provider": CommandSpec(
             name="provider",
             description="show / switch the AI provider (interactive picker with no args)",
@@ -797,7 +949,23 @@ def list_commands(workdir: str | None = None) -> dict[str, CommandSpec]:
             source="command",
             template=str(template),
             subtask=bool(command.get("subtask")),
+            agent=str(command.get("agent") or "").strip() or None,
             hints=tuple(hints(str(template))),
+            handler=_run_template,
+        )
+
+    for name, command in _command_files(workdir).items():
+        if name in commands:
+            continue
+        template = str(command.get("template") or "")
+        commands[name] = CommandSpec(
+            name=name,
+            description=str(command.get("description") or ""),
+            source="command-file",
+            template=template,
+            subtask=bool(command.get("subtask")),
+            agent=str(command.get("agent") or "").strip() or None,
+            hints=tuple(hints(template)),
             handler=_run_template,
         )
 

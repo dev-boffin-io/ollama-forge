@@ -367,3 +367,117 @@ class TestModelCommand:
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
         assert slash.execute("model", "", "/tmp") is True
         assert fake_cfg["providers"]["ollama"]["default_model"] == "codellama:7b"
+
+
+class TestThemeCommand:
+    def test_registered(self):
+        cmds = slash.list_commands("/tmp")
+        assert cmds["themes"].source == "builtin"
+        assert cmds["theme"].source == "builtin"
+        assert "themes" in slash.command_names("/tmp")
+        assert "theme" in slash.command_names("/tmp")
+
+    def test_list_shows_themes(self, fake_cfg, capsys):
+        assert slash.execute("theme", "list", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "Themes:" in out
+        assert "ocean" in out
+        assert "nord" in out
+
+    def test_switch_persists_theme(self, fake_cfg, capsys):
+        assert slash.execute("theme", "ocean", "/tmp") is True
+        assert fake_cfg["theme"] == "ocean"
+        assert "ocean" in capsys.readouterr().out
+
+    def test_unknown_theme_rejected(self, fake_cfg, capsys):
+        assert slash.execute("theme", "neon-nightmare", "/tmp") is True
+        assert fake_cfg.get("theme") != "neon-nightmare"
+        assert "Unknown theme" in capsys.readouterr().out
+
+    def test_no_args_shows_active_and_picker_cancel(self, fake_cfg, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "")
+        assert slash.execute("theme", "", "/tmp") is True
+        out = capsys.readouterr().out
+        assert "Cancelled." in out
+        assert fake_cfg.get("theme") is None
+
+    def test_picker_switches_by_number(self, fake_cfg, monkeypatch, capsys):
+        vals = iter(["2"])  # ocean is index 1
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
+        assert slash.execute("theme", "", "/tmp") is True
+        assert fake_cfg["theme"] == "ocean"
+
+    def test_picker_switches_by_name(self, fake_cfg, monkeypatch, capsys):
+        vals = iter(["nord"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(vals))
+        assert slash.execute("theme", "", "/tmp") is True
+        assert fake_cfg["theme"] == "nord"
+
+
+class TestCommandFiles:
+    def _write_cmd(self, root, name, text):
+        d = root / ".dev-assist" / "commands"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(text, encoding="utf-8")
+
+    def test_command_file_registered(self, tmp_path):
+        self._write_cmd(tmp_path, "greet.md", text=(
+            "---\n"
+            "description: Greet with CLI arguments\n"
+            "agent: coder\n"
+            "subtask: true\n"
+            "---\n"
+            "Write a Python CLI that greets $1.\n"
+        ))
+        cmds = slash.list_commands(str(tmp_path))
+        assert "greet" in cmds
+        spec = cmds["greet"]
+        assert spec.source == "command-file"
+        assert spec.description == "Greet with CLI arguments"
+        assert spec.agent == "coder"
+        assert spec.subtask is True
+        assert "$1" in spec.template
+
+    def test_command_file_without_frontmatter(self, tmp_path):
+        self._write_cmd(tmp_path, "plain.md", text="Just do this: $ARGUMENTS\n")
+        cmds = slash.list_commands(str(tmp_path))
+        spec = cmds["plain"]
+        assert spec.source == "command-file"
+        assert spec.agent is None
+        assert "Just do this:" in spec.template
+
+    def test_renders_template(self, tmp_path):
+        self._write_cmd(tmp_path, "refactor.md", text=(
+            "---\ndescription: Refactor target\n---\n"
+            "Refactor $1 and explain the change.\n"
+        ))
+        spec = slash.list_commands(str(tmp_path))["refactor"]
+        assert slash.render_template(spec.template, "main.py", str(tmp_path)) == (
+            "Refactor main.py and explain the change."
+        )
+
+    def test_command_file_does_not_override_builtin(self, tmp_path):
+        self._write_cmd(tmp_path, "init.md", text="custom init body\n")
+        cmds = slash.list_commands(str(tmp_path))
+        assert cmds["init"].source == "builtin"
+
+    def test_broken_frontmatter_still_loads_body(self, tmp_path):
+        self._write_cmd(tmp_path, "odd.md", text="---\nnot: yaml: proper\n---\nDo the thing.$ARGUMENTS\n")
+        spec = slash.list_commands(str(tmp_path))["odd"]
+        assert spec.template.startswith("Do the thing.")
+
+    def test_execute_passes_agent_flag(self, tmp_path, monkeypatch):
+        self._write_cmd(tmp_path, "code.md", text=(
+            "---\nagent: coder\n---\nWrite code for $ARGUMENTS\n"
+        ))
+        captured = {}
+
+        def fake_run_task(task, workdir=None, flags=None):
+            captured["task"] = task
+            captured["agent"] = (flags or {}).get("agent")
+
+        import modules.agent_mode as am
+        monkeypatch.setattr(am, "run_task", fake_run_task)
+        assert slash.execute("code", "thing", str(tmp_path)) is True
+        assert captured["task"] == "Write code for thing"
+        assert captured["agent"] == "coder"

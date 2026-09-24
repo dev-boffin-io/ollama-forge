@@ -108,7 +108,7 @@ def run_task(
     provider = _ai.get_provider(cfg)
     provider.resolve_model()
 
-    from core.tools import TOOL_SCHEMAS, execute_tool
+    from core.tools import all_tool_schemas, execute_tool
 
     if messages is None:
         messages = [
@@ -121,7 +121,7 @@ def run_task(
     while steps < max_steps:
         steps += 1
         try:
-            message = provider.chat(messages, tools=TOOL_SCHEMAS)
+            message = provider.chat(messages, tools=all_tool_schemas())
         except Exception as exc:
             return {
                 "state": "error",

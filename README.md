@@ -331,6 +331,17 @@ da --web --port 8080
 ⚡ dev-assist > ~$ do bump the version everywhere --auto      # no approval prompts
 ⚡ dev-assist > ~$ undo                                       # revert the last run's changes
 
+# Headless run (CI-friendly, no REPL)
+da run "fix the failing test"                # one-shot agent run, plain output
+da run "bump version" --output json         # NDJSON events, exit 0 only if it delivered
+da run "refactor" --agent coder --auto      # force an agent / no approval prompts
+echo "fix the lint errors" | da run         # pipe the task on stdin
+
+# Project instructions & permissions (opencode-style)
+⚡ dev-assist > ~$ /init                     # write AGENTS.md — auto-loaded into every prompt
+⚡ dev-assist > ~$ /themes                  # pick a TUI color theme (default/ocean/gruvbox/…)
+# custom command files: <project>/.dev-assist/commands/*.md  (or ~/.config/dev-assist/commands/)
+
 # Indexing and fast RAG (explicit `ask`)
 ⚡ dev-assist > ~$ index .                    # Index current project
 ⚡ dev-assist > ~$ index /path/to/project     # Index a specific path
@@ -349,6 +360,7 @@ da --web --port 8080
 # Slash commands & persistent sessions
 ⚡ dev-assist > ~$ /model                     # interactive model picker
 ⚡ dev-assist > ~$ /provider                  # switch provider interactively
+⚡ dev-assist > ~$ /themes · /theme 2        # theme picker / switch directly
 ⚡ dev-assist > ~$ /new · /sessions · /resume # persistent sessions (/compact, /rename, /delete)
 ⚡ dev-assist > ~$ /init · /review · /agents  # guided agents.md setup, code review, agent info
 ⚡ dev-assist > ~$ /help                      # list all slash commands
@@ -375,6 +387,11 @@ dev-assist/
 │   │                       OpenRouter, Mistral, Azure, custom (mirrors gui/providers.py)
 │   ├── agent.py            Tool-calling agent loop — planning, sub-tasks, approval
 │   ├── tools.py            JSON-Schema tool registry + execution (read/edit/bash/tests/search)
+│   ├── mcp.py              MCP stdio client — model-context-protocol tool servers
+│   ├── lsp.py              LSP client — Content-Length framed language-server diagnostics
+│   ├── permissions.py      Allow/ask/deny permission rules for tool calls
+│   ├── instructions.py     AGENTS.md auto-discovery + preload into prompts
+│   ├── theme.py            TUI color themes (default/ocean/gruvbox/monokai/nord)
 │   ├── repo_map.py         Compact project map — file tree + top-level signatures
 │   ├── change_tracker.py   Snapshot + undo for agent-made file edits
 │   ├── tui_status.py       Persistent bottom-toolbar state (activity + Ollama status)
@@ -392,7 +409,7 @@ dev-assist/
 │   └── banner.py           Rich-formatted startup banner
 ├── modules/
 │   ├── agent_mode.py       Agent CLI front-end — plan panels, diff previews, undo
-│   ├── slash_commands.py   /commands — provider/model pickers, sessions, templates
+│   ├── slash_commands.py   /commands — provider/model pickers, sessions, /theme, command files
 │   ├── shell_exec.py       Interactive shell passthrough with session cwd tracking
 │   ├── git_helper.py       AI-assisted git conflict/push/pull/rebase helpers
 │   ├── code_audit.py       Staged diff audit via AI review prompt
@@ -463,6 +480,29 @@ Pydantic field defaults
 
 The `ApiEngineConfig` and top-level `AppConfig` models validate all fields on load and raise structured `ValidationError` with field-level messages rather than silent misconfigurations. Sensitive fields (`api_key`) are excluded from JSON serialisation and read-only from environment variables.
 
+Beyond the AI engine settings, `config/settings.json` carries the agent-mode options that previously required REPL flags:
+
+```json
+{
+  "theme": "ocean",
+  "autocommit": "off",
+  "permissions": {
+    "bash": {"allow": ["git log*", "git status*"], "deny": ["git reset*"]},
+    "edit": "ask"
+  },
+  "mcp_servers": {
+    "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]}
+  },
+  "lsp": {"python": {"command": "pylsp", "args": []}}
+}
+```
+
+- `theme` — active TUI theme (`/themes` to pick, `default/ocean/gruvbox/monokai/nord`).
+- `autocommit` — `off` / `ask` / `auto`: commit agent changes automatically after a run.
+- `permissions` — per-tool `allow` / `ask` / `deny` rules (see *Agent Mode*).
+- `mcp_servers` — MCP stdio servers whose tools are exposed as `mcp__<server>__<tool>`.
+- `lsp` — a Language Server per file extension (mapped by the edited file's suffix).
+
 When Pydantic is not installed, the config module gracefully degrades to raw JSON loading with manual fallbacks, keeping the tool functional in minimal environments (e.g. proot-Termux without build tools).
 
 Path resolution for the config file handles both normal dev usage (repo-relative `config/settings.json`) and PyInstaller frozen binary mode (via `DEV_ASSIST_CONFIG_DIR` environment variable injected by the runtime hook at startup).
@@ -483,10 +523,18 @@ Path resolution for the config file handles both normal dev usage (repo-relative
 | `bash` | Run shell commands (builds, tests, git) |
 | `run_tests` | Auto-detect and run the test suite (pytest, unittest, npm test, go test, cargo test, make test) |
 | `web_search` | Keyless DuckDuckGo HTML search (or a configured search API) |
+| `lsp_diagnostics` | Live diagnostics for the edited file via a configured LSP server |
+| `mcp__*` | One tool per tool exposed by your configured MCP servers |
+
+MCP servers and an LSP server (per file extension) are configured in `config/settings.json` and registered dynamically at first use — `core/mcp.py` speaks MCP stdio (newline-delimited JSON-RPC) for any Model Context Protocol server, and `core/lsp.py` speaks the Content-Length framed protocol to surface diagnostics for the file the agent is editing.
 
 **Repo map:** before planning, `core/repo_map.py` injects a compact project map — the file tree plus top-level function/class signatures (structure only, never full code) — into the agent's prompts. For large projects the map is narrowed by the vector store's similarity search to files relevant to the task, and re-narrowed per sub-task.
 
 **Approval:** destructive tools are gated behind an approval callback. The REPL front-end shows **real unified diff previews** (computed against the actual file contents) and asks `approve? [y]es / [n]o / [a]lways` before running anything destructive. Declined calls feed the user's reason (if any) back to the model so it can adapt. Flags: `--yes` auto-approves prompts, `--auto`/`--yolo` skips approval entirely while still tracking changes for undo, `--verbose` shows full tool output.
+
+**Project instructions (AGENTS.md):** `core/instructions.py` discovers every `AGENTS.md` from the project root down to the working directory, reads them, and preloads their rules into the agent's system prompt (deepest file last, so the most specific rules win). `/init` scaffolds a starter `AGENTS.md`. With `"autocommit"` enabled in settings, a finished agent run that touched files commits them automatically and reports the commit hash.
+
+**Permissions:** approval rules can be expressed declaratively in `config/settings.json` via `core/permissions.py` — `allow`, `ask`, and `deny` globs over tool names (e.g. deny `git reset*`). A matching `allow` auto-approves, a matching `ask` prompts, and a matching `deny` rejects the call; unmatched destructive calls still prompt. Since `permissions` takes precedence over an `--auto` flag, deny rules bind even in yolo mode.
 
 **Change tracking & undo:** every `write_file`/`edit_file` in a run is snapshotted before it happens (`core/change_tracker.py`). When the run finishes you get a diffstat (`+N -M files changed`) and can type **`undo`** to revert every touched file — including deleting files the agent created. Trackers are kept across calls in one REPL session, and the activity line is mirrored into the persistent bottom toolbar (`core/tui_status.py`) so you always see live agent activity even while the REPL is idle.
 
@@ -612,6 +660,8 @@ The session provides:
 - `indexed_path` — tracks the currently indexed project path so RAG queries target the right codebase implicitly
 - `history_summary()` — formatted string showing turn count and session elapsed time, shown by `da> status`
 
+When a session is active, its short id is shown directly in the REPL prompt and the persistent toolbar (`⚡ dev-assist [a1b2c3] > ~$`), so you can tell which thread you are in without running `/status`.
+
 ### Web UI (FastAPI)
 
 `web_app.py` implements the web interface (`da --web`) with full async streaming over Server-Sent Events, served by `uvicorn` in the same process (no subprocess, no separate CLI tool). The frontend in `webui/` is plain HTML/CSS/JS with no build step, so it packages cleanly into a single onefile binary. Access is **open by default — no login or registration required**.
@@ -635,7 +685,8 @@ The plugin system allows extending dev-assist with additional task handlers regi
 
 ```
 dev-assist/tests/
-├── test_agent.py          Agent loop, planning, approval gating, tool dispatch, undo
+├── test_agent.py          Agent loop, planning, approval gating, tool dispatch, undo,
+│                          AGENTS.md instruction injection
 ├── test_agent_mode.py     agent-mode flag parsing (--auto/--yes/--verbose) and undo flow
 ├── test_main_shortcuts.py REPL leader-key / Ctrl+P palette shortcuts
 ├── test_providers.py      Provider catalog, lazy key resolution, adapter normalisation
@@ -647,9 +698,17 @@ dev-assist/tests/
 ├── test_session_store.py  SQLite session persistence and /resume restore
 ├── test_shell.py          Shell execution, session cwd tracking, cd/cd- handling,
 │                          pipeline and redirect support
-├── test_slash_commands.py /provider + /model switching, interactive pickers
-└── test_tools.py          Tool registry, JSON-Schema declarations, project-root
-                           confinement, destructive-tool gates
+├── test_slash_commands.py /provider + /model switching, interactive pickers,
+│                          /theme + /themes, custom command markdown files
+├── test_tools.py          Tool registry, JSON-Schema declarations, project-root
+│                          confinement, destructive-tool gates
+├── test_theme.py          Theme presets, switching, persistence, toolbar styles
+├── test_permissions.py    Allow/ask/deny verdicts, wildcard/prefix matching
+├── test_instructions.py   AGENTS.md discovery, caching, instruction injection
+├── test_mcp.py            MCP stdio framing against a fake NDJSON server
+├── test_lsp.py            LSP Content-Length framing + diagnostics against a fake server
+├── test_dynamic_tools.py  register_tool, MCP/LSP schema injection into the registry
+└── test_headless_run.py   `da run`: flag forwarding, JSON output, stdin task, exit codes
 ```
 
 Run with:

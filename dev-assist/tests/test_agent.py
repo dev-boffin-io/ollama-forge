@@ -252,3 +252,36 @@ class TestRunAgentRouting:
         events = []
         run_agent("t", workdir=str(tmp_path), agent="mystery", on_event=lambda k, t: events.append((k, t)))
         assert events[0][1].startswith("build")
+
+
+class TestInstructionsInjection:
+    def test_agents_md_block_injected_into_system_prompt(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        (tmp_path / "AGENTS.md").write_text("Run `pytest -q` offline.", encoding="utf-8")
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "done"},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        run_agent("t", workdir=str(tmp_path))
+        assert any(
+            "## AGENTS.md instructions" in s and "pytest" in s
+            for s in fake.system_contents
+        )
+
+    def test_no_agents_md_no_block(self, tmp_path, monkeypatch):
+        from core.agent import run_agent
+
+        fake = FakeModel([
+            {"content": '{"subtasks": [{"title": "T", "goal": "g"}]}'},
+            _tool_message("read_file", {"path": "main.py"}),
+            {"content": "done"},
+        ])
+        _patch_agent(monkeypatch, fake)
+
+        run_agent("t", workdir=str(tmp_path))
+        assert not any("AGENTS.md instructions" in s for s in fake.system_contents)

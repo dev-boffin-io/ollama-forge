@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import sys
 
 try:
     from rich.console import Console
@@ -21,12 +22,34 @@ try:
 except Exception:
     _console = None
 
+# When True, every human-facing message is routed to stderr so stdout stays
+# pure NDJSON (used by `da run --output json`). Rich console mirrors that.
+_JSON_MODE: bool = False
+
+
+def _set_json_mode(enabled: bool) -> None:
+    global _JSON_MODE, _console
+    _JSON_MODE = enabled
+    _console = Console(file=sys.stderr) if (enabled and _console) else Console()
+
+
+def _json_line(obj: dict) -> None:
+    import json
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
 
 def _print(msg: str) -> None:
+    if _JSON_MODE:
+        _print_plain_stderr(msg)
+        return
     if _console:
         _console.print(msg)
     else:
         print(re.sub(r"\[/?[a-z ]+\]", "", msg))
+
+
+def _print_plain_stderr(msg: str) -> None:
+    print(re.sub(r"\[/?[^\]]*\]", "", msg), file=sys.stderr)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -98,8 +121,13 @@ def _render_diff(diff_text: str, path: str) -> None:
         _print(f"  [dim](no textual change to {path})[/dim]")
         return
     if _console:
+        try:
+            from core.theme import get_theme
+            syntax_theme = get_theme().syntax
+        except Exception:
+            syntax_theme = "ansi_dark"
         _console.print(Panel(
-            Syntax(diff_text.rstrip(), "diff", theme="ansi_dark", word_wrap=True),
+            Syntax(diff_text.rstrip(), "diff", theme=syntax_theme, word_wrap=True),
             title=f"[bold]{path}[/bold]", border_style="yellow", expand=False,
         ))
     else:
@@ -190,16 +218,36 @@ class Approver:
     run. When the user declines, `last_reason` carries whatever they
     typed (or None), so the agent gets useful feedback instead of a
     bare refusal.
+
+    Permission rules (core.permissions) are layered on top:
+      deny  → refused without prompting; `last_reason` explains why
+      allow → auto-approved, even for destructive tools
+      ask   → always prompt
+      none  → default policy (read tools run free, destructive prompt)
     """
 
-    def __init__(self, workdir: str, *, auto_yes: bool = False) -> None:
+    def __init__(self, workdir: str, *, auto_yes: bool = False,
+                 rules: dict | None = None) -> None:
         self.workdir = workdir
         self.auto_yes = auto_yes
+        self.rules = rules or {}
         self.always: set[str] = set()
         self.last_reason: str | None = None
 
     def __call__(self, name: str, args: dict) -> bool:
         self.last_reason = None
+
+        from core.permissions import evaluate, is_destructive
+        verdict = evaluate(self.rules, name, args)
+        if verdict == "deny":
+            self.last_reason = f"{name} is blocked by your permission rules"
+            return False
+        if verdict == "allow":
+            return True
+
+        if not is_destructive(name) and verdict != "ask":
+            return True  # read-only tools run free by default
+
         if self.auto_yes or name in self.always:
             return True
 
@@ -234,8 +282,24 @@ class Approver:
         return False
 
 
-def make_approver(workdir: str, *, auto_yes: bool = False) -> Approver:
-    return Approver(workdir, auto_yes=auto_yes)
+def make_approver(workdir: str, *, auto_yes: bool = False,
+                  rules: dict | None = None) -> Approver:
+    return Approver(workdir, auto_yes=auto_yes, rules=rules)
+
+
+def _load_permission_rules() -> dict:
+    """Permission rules from settings.json (never raises)."""
+    try:
+        from core.config import load_config
+        cfg = load_config()
+        if hasattr(cfg, "permissions"):
+            return dict(cfg.permissions or {})
+        if isinstance(cfg, dict):
+            raw = cfg.get("permissions") or {}
+            return raw if isinstance(raw, dict) else {}
+    except Exception:
+        pass
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -372,6 +436,85 @@ def _compact_session_if_needed(threshold_chars: int) -> str:
         return ""
 
 
+def _json_requested(flags: dict) -> bool:
+    out = flags.get("output") or flags.get("json")
+    if isinstance(out, bool):
+        return out
+    return str(out or "").lower() in ("json", "true", "1")
+
+
+def _make_json_renderer():
+    """NDJSON progress renderer for `da run --output json`."""
+    from core import tui_status
+
+    def on_event(kind: str, text: str) -> None:
+        if kind == "tool":
+            tui_status.set_activity(text[:60])
+        _json_line({"type": "progress", "kind": kind, "text": text})
+    return on_event
+
+
+# ── Auto-commit after agent runs (opencode parity) ────────────────────────────
+
+def _autocommit_mode() -> str:
+    """settings.json 'autocommit' → one of off|ask|auto (never raises)."""
+    try:
+        from core.config import load_config
+        cfg = load_config()
+        if hasattr(cfg, "autocommit"):
+            return str(cfg.autocommit or "off").lower()
+        if isinstance(cfg, dict):
+            return str(cfg.get("autocommit") or "off").lower()
+    except Exception:
+        pass
+    return "off"
+
+
+def _maybe_auto_commit(task: str, tracker, workdir: str) -> None:
+    """Prompt-or-commit the agent's changes depending on config (best effort)."""
+    mode = _autocommit_mode()
+    if mode in ("off", "false", "0", "", "none"):
+        return
+    if tracker is None or not tracker.has_changes():
+        return
+
+    from core.shell import run_git
+    repo = run_git("rev-parse", "--is-inside-work-tree", cwd=workdir)
+    if not repo.ok:
+        return
+
+    if mode not in ("auto", "true", "1", "yes", "always"):
+        # 'ask': only prompt on a real terminal.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
+        try:
+            answer = input("💾 commit agent changes? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if answer not in ("y", "yes"):
+            _print("[dim]Changes left uncommitted — 'undo' will revert them.[/dim]")
+            return
+
+    files = tracker.touched_paths()
+    rel = [os.path.relpath(p, workdir) for p in files]
+    headline = re.sub(r"\s+", " ", task).strip()[:72] or "agent changes"
+    body = "\n".join(f"- {f}" for f in rel[:60])
+    message = f"dev-assist: {headline}\n\nFiles changed ({len(files)}):\n{body}"
+
+    add = run_git("add", "-A", cwd=workdir)
+    if not add.ok:
+        _print(f"[yellow]⚠ {add.friendly_error()}[/yellow]")
+        return
+    commit = run_git("commit", "-m", message, cwd=workdir)
+    if commit.ok:
+        if _JSON_MODE:
+            _json_line({"type": "commit", "message": headline, "files": rel})
+        _print(f"[green]✔ committed {len(files)} file(s):[/green] [dim]{headline}[/dim]")
+    else:
+        _print(f"[yellow]⚠ commit failed: {commit.stderr.strip() or commit.stdout.strip()}[/yellow]")
+
+
 def run_task(
     task: str,
     *,
@@ -381,16 +524,30 @@ def run_task(
     """
     Run the agent on an arbitrary task and return its final answer.
 
-    This is the shared executor behind `do <task>` and the `/` commands
-    (`/init`, `/review`, config commands, skills). When a persistent session
-    is active, the exchange is recorded into it.
+    This is the shared executor behind `do <task>`, `da run`, and the `/`
+    commands (`/init`, `/review`, config commands, skills). When a persistent
+    session is active, the exchange is recorded into it.
     """
     flags = dict(flags or {})
     auto = bool(flags.get("auto"))
     auto_yes = bool(flags.get("auto_yes"))
     verbose = bool(flags.get("verbose"))
     forced_agent = str(flags.get("agent") or "").strip() or None
+    json_mode = _json_requested(flags)
 
+    if json_mode:
+        _set_json_mode(True)
+    try:
+        return _run_task(
+            task, workdir=workdir, auto=auto, auto_yes=auto_yes,
+            verbose=verbose, forced_agent=forced_agent, json_mode=json_mode,
+        )
+    finally:
+        if json_mode:
+            _set_json_mode(False)
+
+
+def _run_task(task, *, workdir, auto, auto_yes, verbose, forced_agent, json_mode) -> str:
     if workdir is None:
         try:
             from modules.shell_exec import get_cwd
@@ -455,8 +612,13 @@ def run_task(
                    "asking. Every change is snapshotted — you can type 'undo' "
                    "afterwards to revert them all.")
         approver = approve_everything
+        renderer = _make_json_renderer() if json_mode else _make_renderer(verbose)
+        if json_mode:
+            _json_line({"type": "mode", "mode": "auto"})
     else:
-        approver = make_approver(workdir, auto_yes=auto_yes)
+        approver = make_approver(workdir, auto_yes=auto_yes,
+                                 rules=_load_permission_rules())
+        renderer = _make_json_renderer() if json_mode else _make_renderer(verbose)
 
     final = ""
     try:
@@ -464,7 +626,7 @@ def run_task(
             task,
             workdir=workdir,
             approver=approver,
-            on_event=_make_renderer(verbose),
+            on_event=renderer,
             agent=agent_id,
             extra_context=extra_context,
         )
@@ -476,12 +638,22 @@ def run_task(
     tracker = get_tracker()
     if tracker and tracker.has_changes():
         _print(f"\n[bold]{tracker.diffstat()}[/bold]  [dim](type 'undo' to revert)[/dim]")
+        if json_mode:
+            _json_line({
+                "type": "changes",
+                "files": tracker.touched_paths(),
+                "stat": tracker.diffstat(),
+            })
 
+    if json_mode:
+        _json_line({"type": "result", "text": final})
     if final:
         if _console:
             _console.print(f"\n{final}", markup=False)
         else:
             print(f"\n{final}")
+
+    _maybe_auto_commit(task, tracker, workdir)
 
     _record_turn(task, final, agent=agent_id)
     return final

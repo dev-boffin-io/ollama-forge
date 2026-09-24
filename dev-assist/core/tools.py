@@ -17,6 +17,12 @@ Execution is deliberately separate from declaration: `TOOL_SCHEMAS` is what
 we send to the model, `execute_tool()` is what actually runs. Tools marked
 `destructive` route through an approval callback first, so the diff-preview
 + approve layer can hook in without touching the loop.
+
+Dynamic tools (opencode parity): MCP servers (`core.mcp`) and the LSP
+diagnostics tool (`core.lsp`) register extra schemas at first use via
+`all_tool_schemas()` — the model sees `mcp__{server}__{tool}` entries plus
+`lsp_diagnostics` only when those integrations are actually configured, so
+broken/failed servers degrade to "tool not listed" instead of erroring.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from core import lsp, mcp
 from core.toolimpl import editors, html2md, store
 from core.toolimpl import patch as patchlib
 
@@ -1587,10 +1594,109 @@ _EXECUTORS: dict[str, Callable[[dict, str], str]] = {
     "apply_patch": _tool_apply_patch,
 }
 
+# ── Dynamic tool registry (MCP tools, LSP, plugins) ────────────────────────
+# Every extra tool is a (schema, executor) pair appended at first use; the
+# model only ever sees what all_tool_schemas() returns. Two extra executors
+# are wired into execute_tool so ephemeral MCP calls never need a schema.
+_EXTRA_SCHEMAS: list[dict] = []
+_EXTRA_EXECUTORS: dict[str, Callable[[dict, str], str]] = {}
+_dynamic_tools_inited = False
+
+
+def register_tool(
+    name_or_schema: str | dict,
+    *,
+    executor: Callable[[dict, str], str],
+    schema: dict | None = None,
+) -> None:
+    """Register a dynamic tool. Either pass a full schema dict as the first
+    argument (its `function.name` is used) plus `executor=`, or pass a
+    `name` plus `executor=` and an optional `schema=` (a minimal one is
+    synthesised otherwise)."""
+    if isinstance(name_or_schema, dict):
+        name = str((name_or_schema.get("function") or {}).get("name") or "")
+        if not name:
+            raise ValueError("registered schema must include a function.name")
+        fn = schema if schema is not None else name_or_schema
+    else:
+        name = name_or_schema
+        fn = schema or {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Dynamic tool: {name}.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    if not any(s.get("function", {}).get("name") == name for s in _EXTRA_SCHEMAS):
+        _EXTRA_SCHEMAS.append(fn)
+    _EXTRA_EXECUTORS[name] = executor
+
+
+def _lsp_configured() -> bool:
+    try:
+        from core import config as _config
+        cfg = _config.load_config()
+        section = getattr(cfg, "lsp", None) if not isinstance(cfg, dict) else cfg.get("lsp")
+        return isinstance(section, dict) and bool(section)
+    except Exception:
+        return False
+
+
+def _ensure_dynamic_tools() -> None:
+    """Register configured integrations once (lazy: spawns nothing)."""
+    global _dynamic_tools_inited
+    if _dynamic_tools_inited:
+        return
+    _dynamic_tools_inited = True
+
+    if _lsp_configured():
+        register_tool(lsp.lsp_schema(), executor=lsp.lsp_executor)
+
+    for schema in mcp.installed_schemas():
+        register_tool(schema, executor=mcp.call_tool)
+
+
+def all_tool_schemas() -> list[dict]:
+    """Built-in schemas plus any registered dynamic ones."""
+    _ensure_dynamic_tools()
+    if not _EXTRA_SCHEMAS:
+        return TOOL_SCHEMAS
+    return TOOL_SCHEMAS + list(_EXTRA_SCHEMAS)
+
+
+def reset_dynamic_tools() -> None:
+    """Clear registered extras and forgotten connections (test helper)."""
+    global _EXTRA_SCHEMAS, _EXTRA_EXECUTORS, _dynamic_tools_inited
+    _EXTRA_SCHEMAS = []
+    _EXTRA_EXECUTORS = {}
+    _dynamic_tools_inited = False
+    try:
+        mcp.reset_for_tests()
+    except Exception:
+        pass
+    try:
+        lsp.reset_for_tests()
+    except Exception:
+        pass
+
+
+def _tool_mcp(name: str, args: dict, workdir: str) -> str:
+    from core import mcp as _mcp
+    return _mcp.call_tool(name, args or {}, workdir)
+
 
 def execute_tool(name: str, args: dict[str, Any], workdir: str) -> str:
     """Run a tool by name. Always returns a string for the model to read."""
+    _ensure_dynamic_tools()
+    if name.startswith("mcp__"):
+        if not isinstance(args, dict):
+            return f"Error: arguments for {name} must be an object."
+        return _tool_mcp(name, args, workdir)
+
     fn = _EXECUTORS.get(name)
+    if fn is None:
+        fn = _EXTRA_EXECUTORS.get(name)
     if fn is None:
         return f"Error: unknown tool {name!r}. Available: {', '.join(sorted(_EXECUTORS))}"
     if not isinstance(args, dict):
@@ -1638,4 +1744,8 @@ def describe_call(name: str, args: dict) -> str:
                 if ln.startswith("*** "):
                     return f"apply_patch: {ln.strip()[:70]}"
         return f"apply_patch: {args}"
+    if name == "lsp_diagnostics":
+        return f"lsp_diagnostics: {args.get('path', '')}"
+    if name.startswith("mcp__"):
+        return f"mcp tool: {name.split('__', 2)[-1]}" if name.count("__") >= 2 else f"{name}: {args}"
     return f"{name}: {args}"
