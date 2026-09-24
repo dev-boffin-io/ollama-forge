@@ -8,7 +8,16 @@ Usage:
   python main.py --web --port 8080
   python main.py --resume           →  resume the most recent session
   python main.py --session <id>     →  resume a specific session
+  python main.py run "<task>"       →  one-shot headless agent run (CI-friendly)
   python main.py --help             →  Show this help
+
+Headless run (`da run`):
+  python main.py run "fix the failing test"          →  text output (rich)
+  python main.py run "refactor" --output json        →  NDJSON events to stdout
+  python main.py run "task" --agent coder --auto     →  force an agent / no prompts
+  Flags: --output json|text · --agent <name> ·
+         --yes · --auto · --verbose
+  Exit code: 0 on success (final answer produced), 1 otherwise.
 
 CLI input modes:
   <message>           →  chat with AI / built-in commands / slash (/...) commands
@@ -248,7 +257,7 @@ def _start_cli(resume_spec: bool | str | None = None) -> None:
 
 
 def _get_prompt_str() -> str:
-    """Build dynamic prompt: ⚡ dev-assist > /current/path$"""
+    """Build dynamic prompt: ⚡ dev-assist [sid]? > /current/path$"""
     import os as _os
     try:
         from modules.shell_exec import get_cwd
@@ -261,7 +270,29 @@ def _get_prompt_str() -> str:
     if cwd.startswith(home):
         cwd = "~" + cwd[len(home):]
 
-    return f"⚡ dev-assist > {cwd}$ "
+    tag = _session_tag()
+    tag_str = f" [{tag}]" if tag else ""
+    return f"⚡ dev-assist{tag_str} > {cwd}$ "
+
+
+def _session_tag() -> str:
+    """Short id of the active persistent session ('' when unavailable)."""
+    try:
+        from core import session_store
+        sid = session_store.current_session_id()
+        return sid[:6] if sid else ""
+    except Exception:
+        return ""
+
+
+def _session_tag() -> str:
+    """Short id of the active persistent session ('' when unavailable)."""
+    try:
+        from core import session_store
+        sid = session_store.current_session_id()
+        return sid[:6] if sid else ""
+    except Exception:
+        return ""
 
 
 _LEADER_ROUTER = {
@@ -398,10 +429,14 @@ def _build_prompt_fn():
 
         from core import tui_status
 
-        toolbar_style = Style.from_dict({
-            "toolbar": "bg:#333333 #ffffff",
-            "toolbar.activity": "bg:#333333 #ffcc00",
-        })
+        try:
+            from core.theme import get_theme, toolbar_style
+            toolbar_style = toolbar_style(get_theme())
+        except Exception:
+            toolbar_style = Style.from_dict({
+                "toolbar": "bg:#333333 #ffffff",
+                "toolbar.activity": "bg:#333333 #ffcc00",
+            })
 
         session = PromptSession(
             history=InMemoryHistory(),
@@ -484,7 +519,8 @@ def _build_prompt_fn():
 def _parse_args() -> tuple[bool, str, int, bool | str | None]:
     """Parse --web, --host, --port, --resume, --session from sys.argv."""
     args = sys.argv[1:]
-    web = "--web" in args
+    run_cmd = args[:1] == ["run"]
+    web = "--web" in args and not run_cmd
     host = "127.0.0.1"  # loopback by default — pass --host 0.0.0.0 to expose
     port = 8000
     resume_spec: bool | str | None = None
@@ -518,6 +554,122 @@ def _parse_args() -> tuple[bool, str, int, bool | str | None]:
     return web, host, port, resume_spec
 
 
+def _start_run(args: list[str]) -> None:
+    """
+    `da run "<task>"` — one-shot headless agent mode, CI-friendly.
+
+    Flags: --output json|text · --agent <name> · --yes · --auto · --verbose.
+    With --output json, NDJSON events stream to stdout and human-readable
+    messages go to stderr. The final answer is also returned, so exit code
+    is 0 only when the agent produced one.
+    """
+    from modules.agent_mode import run_task
+
+    task_parts: list[str] = []
+    flags: dict = {"auto": False, "auto_yes": False, "verbose": False,
+                   "agent": None, "output": "text"}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--auto", "--yolo"):
+            flags["auto"] = True
+        elif a in ("--yes", "-y"):
+            flags["auto_yes"] = True
+        elif a in ("--verbose", "-v"):
+            flags["verbose"] = True
+        elif a in ("--json", "-j"):
+            flags["output"] = "json"
+        elif a == "--output":
+            if i + 1 < len(args):
+                flags["output"] = args[i + 1]
+                i += 1
+        elif a == "--agent":
+            if i + 1 < len(args):
+                flags["agent"] = args[i + 1]
+                i += 1
+        elif a in ("-h", "--help", "help"):
+            print(__doc__)
+            sys.exit(0)
+        elif a.startswith("--") and "=" in a and not a.startswith("--="):
+            key, _, val = a.partition("=")
+            if key == "--output":
+                flags["output"] = val
+            else:
+                task_parts.append(a)
+        else:
+            task_parts.append(a)
+        i += 1
+
+    # Flags may be embedded inside a single quoted argv element, e.g.
+    #   da run "refactor --agent coder --auto"
+    import shlex
+
+    words: list[str] = []
+    for part in task_parts:
+        toks = shlex.split(part)
+        for t in toks:
+            if t in ("--auto", "--yolo"):
+                flags["auto"] = True
+            elif t in ("--yes", "-y"):
+                flags["auto_yes"] = True
+            elif t in ("--verbose", "-v"):
+                flags["verbose"] = True
+            elif t in ("--json", "-j"):
+                flags["output"] = "json"
+            elif t == "--output":
+                words.append("--output")  # value follows, spliced below
+            elif t == "--agent":
+                words.append("--agent")
+            elif t.startswith("--output="):
+                flags["output"] = t.partition("=")[2]
+            elif t.startswith("--agent="):
+                flags["agent"] = t.partition("=")[2]
+            else:
+                words.append(t)
+    merged: list[str] = []
+    skip = 0
+    for idx, w in enumerate(words):
+        if skip:
+            skip -= 1
+            continue
+        if w == "--output" and idx + 1 < len(words):
+            flags["output"] = words[idx + 1]
+            skip = 1
+        elif w == "--agent" and idx + 1 < len(words):
+            flags["agent"] = words[idx + 1]
+            skip = 1
+        else:
+            merged.append(w)
+
+    task = " ".join(merged).strip()
+    if not task:
+        # Allow piping the task on stdin: echo "fix x" | da run
+        try:
+            if not sys.stdin.isatty():
+                task = sys.stdin.read().strip()
+        except Exception:
+            pass
+    if not task:
+        print('Usage: da run "<task>"   e.g. da run "fix the failing test"', file=sys.stderr)
+        print("Flags: --output json|text · --agent <name> · --yes · --auto · --verbose",
+              file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        final = run_task(task, flags=flags)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as exc:
+        if str(flags.get("output")).lower() == "json":
+            import json as _json
+            print(_json.dumps({"type": "error", "text": str(exc)}, ensure_ascii=False), flush=True)
+        else:
+            _print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
+
+    sys.exit(0 if final else 1)
+
+
 def _print(msg: str) -> None:
     try:
         from rich.console import Console
@@ -528,6 +680,11 @@ def _print(msg: str) -> None:
 
 
 def main() -> None:
+    args = sys.argv[1:]
+    if args[:1] == ["run"]:
+        _start_run(args[1:])
+        return
+
     web, host, port, resume_spec = _parse_args()
 
     if web:
