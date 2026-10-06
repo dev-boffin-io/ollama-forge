@@ -31,7 +31,6 @@ modify a repo just because the loop was invoked programmatically.
 """
 
 
-NO_VOLUNTEER_RULE = """Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state (project layout, repo map, prompt contents, context inventory, plan, sub-tasks, progress, or "thinking" steps), or reasoning process unless the user explicitly asks about it. Do not volunteer process, next steps, discoveries, or self-narration ("I need to...", "Let me..."). Answer only the requested output; do not include meta commentary."""
 import json
 import os
 import re
@@ -40,7 +39,7 @@ from typing import Any
 
 from core import agents as agent_registry
 from core import change_tracker
-from core.agents import AgentSpec
+from core.agents import NO_VOLUNTEER_RULE, AgentSpec
 from core.repo_map import build_repo_map
 from core.tools import (
     DESTRUCTIVE_TOOLS,
@@ -72,11 +71,13 @@ the shape:
 
 The "goal" must be self-contained: it will be given to the agent as the only
 instructions for that step, along with the results of earlier steps.
-Never mention or describe your own setup, configuration, environment, model, tools, capabilities, or internal state (including project layout, repo map, prompt contents, context inventory, or "thinking" steps) unless the user explicitly asks about it.
+{rule}
 
 Do not volunteer what you are about to do, how you discovered something, your reasoning process, or summaries of internal scaffolding. Only produce the requested output (the JSON plan). If there is nothing to do, return {"subtasks":[{"title":"Complete","goal":"Complete the task as stated"}]}.
 
 """
+
+PLANNING_PROMPT = PLANNING_PROMPT.replace("{rule}", NO_VOLUNTEER_RULE)
 
 
 def _plan_prompt_task(task: str, repo_map: str = "") -> str:
@@ -403,6 +404,13 @@ def _run_subtask(
     return final_text or "(no response)", steps_used
 
 
+SYNTHESIS_PROMPT = (
+    "You are dev-assist. Produce a short, well-structured final answer "
+    "for the user based on the completed sub-task results below. "
+    + NO_VOLUNTEER_RULE
+)
+
+
 def _synthesize_final_answer(
     task: str,
     results: list[dict],
@@ -422,11 +430,7 @@ def _synthesize_final_answer(
           "the user should be aware of."
     )
     messages = [
-        {"role": "system", "content": (
-            "You are dev-assist. Produce a short, well-structured final answer "
-            "for the user based on the completed sub-task results below. "
-            "Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state, or reasoning process unless the user explicitly asks about it. Do not volunteer process, discoveries, or self-narration. Answer only what is requested."
-        )},
+        {"role": "system", "content": SYNTHESIS_PROMPT},
         {"role": "user", "content": user_msg},
     ]
     try:
@@ -464,7 +468,7 @@ def run_agent(
                 with kind in {"tool", "result", "text", "warn", "plan",
                 "route", "status", "progress"}.
     max_steps — per sub-task step budget (default 24).
-    agent     — which registered agent to run (core.agents.ALL_AGENTS):
+    agent     — which registered agent to run (core.agents.all_agents()):
                 "build" (default), "coder", "reviewer", "explore", or a
                 user-defined agent. Review/explore/persona agents skip
                 multi-step planning and are read-only by prompt + policy.

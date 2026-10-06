@@ -1612,8 +1612,11 @@ def _tool_about(args: dict, workdir: str) -> str:
         info["provider_error"] = str(e)
 
     try:
-        from core import agents
-        info["agents"] = sorted(list(agents.ALL_AGENTS.keys()))
+        from core.agents import all_agents
+        info["agents"] = {
+            aid: {"name": spec.name, "description": spec.description}
+            for aid, spec in sorted(all_agents().items())
+        }
     except Exception as e:
         info["agents_error"] = str(e)
 
@@ -1632,37 +1635,36 @@ def _tool_about(args: dict, workdir: str) -> str:
         info["slash_commands_error"] = str(e)
 
     try:
-        from core import skills
-        info["skills"] = sorted(list(getattr(skills, "SKILLS", {}).keys())) if hasattr(skills, "SKILLS") else []
+        # Same discovery path modules.slash_commands._skill_commands uses.
+        from core.toolimpl import skills as skill_loader
+        found: dict[str, str] = {}
+        for name in skill_loader.list_skills(workdir or os.getcwd()):
+            detail = skill_loader.load_skill(name, workdir or os.getcwd())
+            if detail is None:
+                continue
+            content = str(detail.get("content") or "")
+            first_line = next((ln.strip() for ln in content.splitlines() if ln.strip()), "")
+            found[name] = first_line[:80]
+        info["skills"] = dict(sorted(found.items()))
     except Exception as e:
         info["skills_error"] = str(e)
 
     try:
         from core import mcp
-        try:
-            servers = mcp.get_servers()
-            # handle iterables
-            try:
-                info["mcp_servers"] = sorted(list(servers))
-            except Exception:
-                info["mcp_servers"] = list(servers) if servers else []
-        except Exception:
-            try:
-                cfg_mcp = getattr(mcp, "load_config", lambda: {})()
-                info["mcp_servers"] = sorted(list(cfg_mcp.keys())) if isinstance(cfg_mcp, dict) else []
-            except Exception as e2:
-                info["mcp_servers_error"] = str(e2)
+        servers = mcp._configured_servers()
+        info["mcp_servers"] = sorted(list(servers.keys()))
     except Exception as e:
         info["mcp_servers_error"] = str(e)
 
     try:
-        from core import permissions
-        rules = permissions.load_rules()
-        info["permission_rules"] = len(rules) if rules else 0
+        # Same loader modules.agent_mode.Approver gets its `rules` from.
+        from modules.agent_mode import _load_permission_rules
+        rules = _load_permission_rules()
+        info["permission_rules"] = rules if isinstance(rules, dict) else {}
     except Exception as e:
         info["permission_rules_error"] = str(e)
 
-    return json.dumps(info, indent=2)
+    return json.dumps(info, indent=2, default=str)
 
 _EXECUTORS: dict[str, Callable[[dict, str], str]] = {
     "read_file":   _tool_read_file,
