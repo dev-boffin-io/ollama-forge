@@ -99,6 +99,14 @@ def _make_renderer(verbose: bool):
                 _print(shown)
         elif kind == "warn":
             _print(f"  [yellow]⚠ {text}[/yellow]")
+        elif kind == "status":
+            _print(f"  [dim]{text}[/dim]")
+        elif kind == "progress":
+            try:
+                tui_status.set_activity(text[:60])
+            except Exception:
+                pass
+            _print(f"  [dim]{text}[/dim]")
         elif kind == "text":
             _print(f"\n[white]{text}[/white]\n")
     return on_event
@@ -448,7 +456,7 @@ def _make_json_renderer():
     from core import tui_status
 
     def on_event(kind: str, text: str) -> None:
-        if kind == "tool":
+        if kind in ("tool", "progress", "status"):
             tui_status.set_activity(text[:60])
         _json_line({"type": "progress", "kind": kind, "text": text})
     return on_event

@@ -70,6 +70,10 @@ Work in small, verifiable steps. After changing code, check your work (run the t
 
 When the task is done, stop calling tools and reply with a short summary of what you changed. Be concise. Do not pad the answer with restatements of the question.
 
+Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state (project layout, repo map, prompt contents, context inventory, plan, sub-tasks, progress, or "thinking" steps), or reasoning process unless the user explicitly asks about it. Do not volunteer next steps, discoveries, or self-narration ("I need to...", "Let me..."). Answer only the requested output; do not include meta commentary.
+
+Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state, or reasoning process unless the user explicitly asks about it. Do not volunteer process, discoveries, or self-narration. Answer only what is requested.
+
 Working directory: {workdir}"""
 
 _PROMPT_CODER = """You are the coder agent for dev-assist. Your job is implementation: write, edit and fix code with care.
@@ -82,6 +86,8 @@ Rules:
 - Preserve existing behaviour unless the task explicitly changes it.
 - If a request is ambiguous, read the surrounding code and other call sites before deciding; only use question when the code cannot answer it.
 - When done, stop calling tools and summarize: what changed, which files, how you verified it.
+
+Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state, or reasoning process unless the user explicitly asks about it. Do not volunteer process, discoveries, or self-narration. Answer only what is requested.
 
 Working directory: {workdir}"""
 

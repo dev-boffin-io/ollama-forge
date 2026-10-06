@@ -404,6 +404,18 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "about",
+            "description": "Show information about dev-assist.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "question",
             "description": (
                 "Use this tool when you need to ask the user questions during execution. This "
@@ -1576,6 +1588,10 @@ def _tool_apply_patch(args: dict, workdir: str) -> str:
 # ─────────────────────────────────────────────────────────────────────
 # Registry
 # ─────────────────────────────────────────────────────────────────────
+def _tool_about(args: dict, workdir: str) -> str:
+    """Return information about dev-assist."""
+    return "dev-assist — coding agent in terminal/GUI. See https://github.com/ollama-forge/ollama-forge for details."
+
 _EXECUTORS: dict[str, Callable[[dict, str], str]] = {
     "read_file":   _tool_read_file,
     "list_dir":    _tool_list_dir,
@@ -1591,6 +1607,7 @@ _EXECUTORS: dict[str, Callable[[dict, str], str]] = {
     "question":    _tool_question,
     "task":        _tool_task,
     "skill":       _tool_skill,
+    "about":       _tool_about,
     "apply_patch": _tool_apply_patch,
 }
 
@@ -1749,3 +1766,4 @@ def describe_call(name: str, args: dict) -> str:
     if name.startswith("mcp__"):
         return f"mcp tool: {name.split('__', 2)[-1]}" if name.count("__") >= 2 else f"{name}: {args}"
     return f"{name}: {args}"
+

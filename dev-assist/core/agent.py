@@ -70,6 +70,10 @@ the shape:
 
 The "goal" must be self-contained: it will be given to the agent as the only
 instructions for that step, along with the results of earlier steps.
+Never mention or describe your own setup, configuration, environment, model, tools, capabilities, or internal state (including project layout, repo map, prompt contents, context inventory, or "thinking" steps) unless the user explicitly asks about it.
+
+Do not volunteer what you are about to do, how you discovered something, your reasoning process, or summaries of internal scaffolding. Only produce the requested output (the JSON plan). If there is nothing to do, return {"subtasks":[{"title":"Complete","goal":"Complete the task as stated"}]}.
+
 """
 
 
@@ -169,6 +173,20 @@ def _assistant_turn(message: Any, calls: list[tuple[str, str, dict]]) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 # Planning
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _is_trivial_request(task: str) -> bool:
+    """Heuristic to detect trivial requests that don't need planning."""
+    t = task.strip().lower()
+    # Only skip planning for pure conversational/greeting queries
+    if t in ('hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'ok', 'yes', 'no'):
+        return True
+    # Very short questions without file operations
+    if t.startswith(('hi', 'hello', 'hey')) and len(t.split()) <= 3:
+        return True
+    if t.endswith('?') and len(t.split()) <= 5:
+        return True
+    return False
 def _plan_subtasks(
     task: str,
     provider,
@@ -404,7 +422,8 @@ def _synthesize_final_answer(
     messages = [
         {"role": "system", "content": (
             "You are dev-assist. Produce a short, well-structured final answer "
-            "for the user based on the completed sub-task results below."
+            "for the user based on the completed sub-task results below. "
+            "Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state, or reasoning process unless the user explicitly asks about it. Do not volunteer process, discoveries, or self-narration. Answer only what is requested."
         )},
         {"role": "user", "content": user_msg},
     ]
@@ -441,7 +460,7 @@ def run_agent(
                 also the behaviour read-only agents want).
     on_event  — optional progress hook, called as on_event(kind, text)
                 with kind in {"tool", "result", "text", "warn", "plan",
-                "route"}.
+                "route", "status", "progress"}.
     max_steps — per sub-task step budget (default 24).
     agent     — which registered agent to run (core.agents.ALL_AGENTS):
                 "build" (default), "coder", "reviewer", "explore", or a
@@ -484,7 +503,7 @@ def run_agent(
     # ── Thinking phase ──
     # Default agents plan the task into sub-tasks; point-agents (review,
     # explore) execute the request directly in a single step.
-    if spec.uses_planning:
+    if spec.uses_planning and not _is_trivial_request(task):
         plan = _plan_subtasks(task, provider, repo_map=map_block)
         emit("plan", _format_plan(plan))
     else:
@@ -528,7 +547,7 @@ def run_agent(
         remaining_budget = TOTAL_STEPS_CAP - steps_used_total
         budget = max(1, min(max_steps, remaining_budget))
 
-        emit("text", f"▶ Sub-task {idx}/{len(plan)}: {subtask['title']}")
+        emit("progress", f"▶ Sub-task {idx}/{len(plan)}: {subtask['title']}")
 
         summary, steps_used = _run_subtask(
             idx, len(plan), messages,
@@ -539,6 +558,6 @@ def run_agent(
 
         results.append({"title": subtask["title"], "summary": summary})
 
-    emit("text", "✓ All sub-tasks complete — writing final answer.")
+    emit("status", "✓ All sub-tasks complete — writing final answer.")
 
     return _synthesize_final_answer(task, results, provider)
