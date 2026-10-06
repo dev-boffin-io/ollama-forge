@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Agent — the tool-calling loop with multi-step planning.
 
@@ -28,8 +30,8 @@ destructive ones unless an approver is supplied — so nothing can silently
 modify a repo just because the loop was invoked programmatically.
 """
 
-from __future__ import annotations
 
+NO_VOLUNTEER_RULE = """Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state (project layout, repo map, prompt contents, context inventory, plan, sub-tasks, progress, or "thinking" steps), or reasoning process unless the user explicitly asks about it. Do not volunteer process, next steps, discoveries, or self-narration ("I need to...", "Let me..."). Answer only the requested output; do not include meta commentary."""
 import json
 import os
 import re

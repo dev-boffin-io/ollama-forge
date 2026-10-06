@@ -51,6 +51,9 @@ class AgentSpec:
     model_hint: str | None = None  # optional preferred model (informational)
 
 
+
+NO_VOLUNTEER_RULE = """Never mention or describe your own setup, configuration, environment, model, tools, capabilities, internal state (project layout, repo map, prompt contents, context inventory, plan, sub-tasks, progress, or "thinking" steps), or reasoning process unless the user explicitly asks about it. Do not volunteer process, next steps, discoveries, or self-narration ("I need to...", "Let me..."). Answer only the requested output; do not include meta commentary.
+"""
 # ── System prompts ────────────────────────────────────────────────────────────
 
 _PROMPT_BUILD = """You are dev-assist, a coding agent that works directly in the user's project.

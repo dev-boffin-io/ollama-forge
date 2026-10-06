@@ -1590,7 +1590,79 @@ def _tool_apply_patch(args: dict, workdir: str) -> str:
 # ─────────────────────────────────────────────────────────────────────
 def _tool_about(args: dict, workdir: str) -> str:
     """Return information about dev-assist."""
-    return "dev-assist — coding agent in terminal/GUI. See https://github.com/ollama-forge/ollama-forge for details."
+    import json
+    import os
+
+    info: dict = {}
+    try:
+        info["workdir"] = os.path.abspath(workdir or os.getcwd())
+    except Exception as e:
+        info["workdir_error"] = str(e)
+
+    try:
+        from core import ai
+        cfg = ai._load_config()
+        prov = ai.get_provider(cfg)
+        info["provider"] = getattr(prov, "provider_id", getattr(prov, "kind", "unknown"))
+        try:
+            info["model"] = prov.resolve_model()
+        except Exception as e:
+            info["model_error"] = str(e)
+    except Exception as e:
+        info["provider_error"] = str(e)
+
+    try:
+        from core import agents
+        info["agents"] = sorted(list(agents.ALL_AGENTS.keys()))
+    except Exception as e:
+        info["agents_error"] = str(e)
+
+    try:
+        from core import tools
+        schemas = tools.all_tool_schemas()
+        info["tools"] = sorted(s["function"]["name"] for s in schemas)
+    except Exception as e:
+        info["tools_error"] = str(e)
+
+    try:
+        from modules import slash_commands
+        cmds = slash_commands.list_commands(workdir or os.getcwd())
+        info["slash_commands"] = sorted(list(cmds.keys()))
+    except Exception as e:
+        info["slash_commands_error"] = str(e)
+
+    try:
+        from core import skills
+        info["skills"] = sorted(list(getattr(skills, "SKILLS", {}).keys())) if hasattr(skills, "SKILLS") else []
+    except Exception as e:
+        info["skills_error"] = str(e)
+
+    try:
+        from core import mcp
+        try:
+            servers = mcp.get_servers()
+            # handle iterables
+            try:
+                info["mcp_servers"] = sorted(list(servers))
+            except Exception:
+                info["mcp_servers"] = list(servers) if servers else []
+        except Exception:
+            try:
+                cfg_mcp = getattr(mcp, "load_config", lambda: {})()
+                info["mcp_servers"] = sorted(list(cfg_mcp.keys())) if isinstance(cfg_mcp, dict) else []
+            except Exception as e2:
+                info["mcp_servers_error"] = str(e2)
+    except Exception as e:
+        info["mcp_servers_error"] = str(e)
+
+    try:
+        from core import permissions
+        rules = permissions.load_rules()
+        info["permission_rules"] = len(rules) if rules else 0
+    except Exception as e:
+        info["permission_rules_error"] = str(e)
+
+    return json.dumps(info, indent=2)
 
 _EXECUTORS: dict[str, Callable[[dict, str], str]] = {
     "read_file":   _tool_read_file,

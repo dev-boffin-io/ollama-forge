@@ -534,6 +534,12 @@ def _cmd_delete(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
     return True
 
 
+def _cmd_about(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
+    from core import tools
+    print(tools.execute_tool("about", {}, workdir or _cwd()))
+    return True
+
+
 def _cmd_help(spec: CommandSpec, raw_args: str, workdir: str) -> bool:
     commands = list_commands(workdir)
     _print("\n[bold]Slash commands[/bold]  (type [bold]/<name>[/bold] or press [bold]ctrl+p[/bold] for the palette)\n")
@@ -926,6 +932,8 @@ def _builtin_specs() -> dict[str, CommandSpec]:
         "resume": CommandSpec(name="resume", description="resume a saved session (#N or <id>)", source="builtin", handler=_cmd_resume),
         "rename": CommandSpec(name="rename", description="rename the current session", source="builtin", handler=_cmd_rename),
         "delete": CommandSpec(name="delete", description="delete a saved session (#N or <id>)", source="builtin", handler=_cmd_delete),
+        "about": CommandSpec(name="about", description="show information about dev-assist", source="builtin", handler=_cmd_about),
+        "status": CommandSpec(name="status", description="show information about dev-assist", source="builtin", handler=_cmd_about),
         "help": CommandSpec(name="help", description="list all slash commands", source="builtin", handler=_cmd_help),
     }
 
