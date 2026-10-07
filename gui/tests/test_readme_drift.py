@@ -81,6 +81,44 @@ def test_readme_agents_exist_in_real_registry():
     assert names <= real, f"documented agents not in registry: {names - real}"
 
 
+# UI literals the README GUI section documents, mapped to the source file that
+# must still contain them (button/label text, dialog buttons, slash names).
+_GUI_LITERALS = [
+    ("📁 Open Dir", "gui/main.py"),
+    ("☢ Auto-approve", "gui/main.py"),
+    ("↩ Undo changes", "gui/main.py"),
+    ("Approve", "gui/approval_dialog.py"),
+    ("Always", "gui/approval_dialog.py"),
+    ("Deny", "gui/approval_dialog.py"),
+    ("Reason (optional, for Deny)", "gui/approval_dialog.py"),
+]
+
+
+def test_readme_gui_literals_exist_in_code():
+    text = _readme()
+    section = _section(text, "### GUI Agent Mode — dev-assist integration")
+    cache = {}
+    for literal, rel in _GUI_LITERALS:
+        assert literal in section, f"README no longer documents {literal!r}"
+        if rel not in cache:
+            with open(os.path.join(_ROOT, rel), encoding="utf-8") as f:
+                cache[rel] = f.read()
+        assert literal in cache[rel], (
+            f"README documents {literal!r} but it is gone from {rel}")
+
+
+def test_readme_gui_about_status_slash_names_exist_in_code():
+    text = _readme()
+    section = _section(text, "### GUI Agent Mode — dev-assist integration")
+    path = os.path.join(_ROOT, "dev-assist/modules/slash_commands.py")
+    with open(path, encoding="utf-8") as f:
+        source = f.read()
+    for name in ("about", "status"):
+        assert f"/{name}" in section
+        assert f'"{name}": CommandSpec(' in source, (
+            f"README documents /{name} but the registry no longer registers it")
+
+
 def test_gui_picker_matches_agent_registry():
     from core.agents import routable_agents
     real = set(routable_agents().keys())
