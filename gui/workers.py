@@ -483,6 +483,25 @@ class CodeRunWorker(_StopMixin, QThread):
         self.finished.emit()
 
 
+# ── Session compaction worker (dev-assist compact_context) ───────────────────
+class CompactWorker(QThread):
+    summary = pyqtSignal(str)
+    failed  = pyqtSignal(str)
+
+    def __init__(self, messages: list[dict]):
+        QThread.__init__(self)
+        self.messages = messages
+
+    def run(self):
+        try:
+            from core import agents
+            text = agents._msgs_text(self.messages)
+            summary = agents.compact_context(text)
+            self.summary.emit(summary or "")
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 # ── Dev-assist agent worker ───────────────────────────────────────────────────
 class AgentWorker(_StopMixin, QThread):
     event              = pyqtSignal(str, str)   # kind, text

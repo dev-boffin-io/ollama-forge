@@ -1139,3 +1139,98 @@ def test_slash_off_when_chat_mode(gui, monkeypatch, tmp_path):
     gui.input.setPlainText("/status")
     gui._maybe_show_slash_completions()
     assert not gui._slash_completer.popup().isVisible()
+
+
+# ── 11. session continuity — GUI-native /new /sessions /resume /compact (3.3) ─
+def _seed_conv(gui, title, msgs):
+    cid = gui.db.create_conversation(title)
+    for role, content in msgs:
+        gui.db.add_message(cid, role, content)
+    return cid
+
+
+def _slash_out(gui, text):
+    gui._handle_slash_command(text)
+    outs = [m["text"] for m in gui._think if m["kind"] == "slash"]
+    return outs[-1] if outs else ""
+
+
+def test_slash_sessions_lists_gui_conversations(gui):
+    cid = _seed_conv(gui, "Alpha", [("user", "hi"), ("assistant", "hello")])
+    gui.current_conv_id = cid
+    out = _slash_out(gui, "/sessions")
+    assert "#1" in out and "Alpha" in out and "2 msgs" in out
+    assert "▶️" in out                 # current marked
+    assert "/resume #1" in out
+
+
+def test_slash_new_starts_fresh_conversation(gui):
+    cid = _seed_conv(gui, "Old", [("user", "x")])
+    gui.current_conv_id = cid
+    out = _slash_out(gui, "/new")
+    assert "New conversation started" in out
+    assert gui.current_conv_id is None
+    assert not [m for m in gui._chat_log if m.get("type") in ("user", "ai")]
+    assert gui._compaction_summary == ""
+
+
+def test_slash_resume_loads_conversation(gui):
+    _seed_conv(gui, "Other", [("user", "z")])        # created first → #2
+    target = _seed_conv(gui, "Target", [("user", "q"), ("assistant", "a")])  # #1 (latest)
+    gui.current_conv_id = None
+    out = _slash_out(gui, "/resume #1")
+    assert "Resumed" in out and "2 messages" in out
+    assert gui.current_conv_id == target
+    conv = [m for m in gui._chat_log if m.get("type") in ("user", "ai")]
+    assert len(conv) == 2
+    assert gui.chat_title_btn.text() == "💬  Target"
+
+
+def test_slash_resume_by_id_and_bad_ref(gui):
+    target = _seed_conv(gui, "ById", [("user", "q")])
+    out = _slash_out(gui, f"/resume {target}")
+    assert "Resumed" in out and gui.current_conv_id == target
+    out2 = _slash_out(gui, "/resume 99")
+    assert "No conversation matches" in out2
+    out3 = _slash_out(gui, "/resume")
+    assert "Usage:" in out3
+
+
+def test_slash_compact_sets_extra_context_for_next_run(gui, monkeypatch,
+                                                       tmp_path):
+    import core.agents as agents_mod
+    monkeypatch.setattr(agents_mod, "compact_context", lambda text: "COMPACTED " + str(len(text)))
+    cid = _seed_conv(gui, "Chat", [("user", "hello"), ("assistant", "hi")])
+    gui.current_conv_id = cid
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    if not gui.agent_mode:
+        gui._toggle_agent_mode()
+
+    gui.input.setPlainText("/compact")
+    gui._send()
+    assert _pump_until(lambda: bool(gui._compaction_summary))
+    assert gui._compaction_summary.startswith("COMPACTED")
+
+    captured = {}
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None,
+                       max_steps=24, agent="build", extra_context=""):
+        captured["extra_context"] = extra_context
+        return "ok"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    gui.input.setPlainText("continue")
+    gui._send()
+    assert _pump_until(lambda: gui.thread is None)
+    assert captured.get("extra_context") == gui._compaction_summary
+
+
+def test_slash_compact_requires_messages(gui):
+    out = _slash_out(gui, "/compact")
+    assert "Nothing to compact" in out or "start a conversation" in out
+    gui.current_conv_id = _seed_conv(gui, "Solo", [("user", "only one")])
+    out2 = _slash_out(gui, "/compact")
+    assert "at least 2 messages" in out2

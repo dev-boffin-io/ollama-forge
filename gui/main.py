@@ -157,6 +157,7 @@ class OllamaGUI(QMainWindow):
         self._think_expanded = False
         self._agent_state = {"phase": "idle", "agent": "", "step": 0,
                              "max_steps": 0, "tool": "", "note": ""}
+        self._compaction_summary = ""       # /compact output fed to next run
 
         # Declared BEFORE _load_settings() so a persisted value survives.
         self._persistent_memory = False   # toggle: persistent vs session-only
@@ -1460,6 +1461,7 @@ class OllamaGUI(QMainWindow):
                 prompt, self.agent_workdir, agent_name=agent_id,
                 auto_approve=self._agent_auto_approve,
                 always=self._agent_always,
+                extra_context=self._compaction_summary or "",
             )
             self.thread.event.connect(self._on_agent_event)
             self.thread.done.connect(self._on_agent_finished)
@@ -1485,6 +1487,13 @@ class OllamaGUI(QMainWindow):
         mem_prefix = self._build_memory_prefix()
         if mem_prefix:
             ollama_msgs.insert(0, {"role": "system", "content": mem_prefix})
+
+        # Compaction summary from /compact — prior turns condensed
+        if self._compaction_summary:
+            ollama_msgs.insert(0, {
+                "role": "system",
+                "content": "Prior conversation (compacted):\n" + self._compaction_summary,
+            })
 
         # RAG — search runs inside SmartChatWorker (not on GUI thread)
         # _rag is cleared after each build/clear; load the persisted index
@@ -2811,6 +2820,13 @@ class OllamaGUI(QMainWindow):
         raw_args = raw_args.strip()
         workdir = self.agent_workdir or os.getcwd()
 
+        # Session commands are GUI-native: they operate on the GUI conversation
+        # database (single source of truth) instead of the CLI-side store.
+        if name in ("new", "sessions", "resume", "compact"):
+            self._show_slash_output(name, self._handle_gui_session_slash(name, raw_args))
+            self._update_input_state()
+            return
+
         # The CLI pickers (_cmd_model/_cmd_provider without args) call input()
         # and would hang the GUI — send them down the print-only `list` path.
         if not raw_args and name in ("model", "provider"):
@@ -2835,8 +2851,12 @@ class OllamaGUI(QMainWindow):
         finally:
             slash_commands._console = real_console
 
-        out = buf.getvalue().strip()
-        shown = out
+        self._show_slash_output(name, buf.getvalue().strip())
+        self._update_input_state()
+
+    def _show_slash_output(self, name: str, out: str):
+        """Ship a slash command's captured output to the think buffer."""
+        shown = (out or "").strip()
         if len(shown) > self._SLASH_MAX_DISPLAY:
             shown = shown[:self._SLASH_MAX_DISPLAY] + "\n… (truncated)"
         if shown:
@@ -2844,7 +2864,110 @@ class OllamaGUI(QMainWindow):
             self._think.append({"kind": "slash", "text": shown})
             self._think_expanded = True
             self._render_chat()
-        self._update_input_state()
+
+    # ── GUI-native session commands (backed by the GUI conversation DB) ──
+    def _handle_gui_session_slash(self, name: str, raw_args: str) -> str:
+        if name == "new":
+            self._new_chat()
+            self._compaction_summary = ""
+            return "📂 New conversation started — /sessions lists them, /resume #N returns."
+        if name == "sessions":
+            return self._session_list_text()
+        if name == "resume":
+            return self._gui_resume(raw_args)
+        if name == "compact":
+            return self._start_compact()
+        return ""
+
+    def _session_list_text(self) -> str:
+        with QMutexLocker(self.db_mutex):
+            convos = self.db.list_conversations()
+        if not convos:
+            return "No saved conversations yet — send a message first."
+        lines = ["📚 Conversations (latest first):"]
+        for i, c in enumerate(convos, 1):
+            n = self.db.get_messages(c["id"])
+            mark = "▶️" if c["id"] == self.current_conv_id else "  "
+            pin = "📌" if c["pinned"] else "  "
+            title = (c["title"] or "(no messages yet)")[:60]
+            lines.append(f"{mark} #{i} {pin} {title}  ({len(n)} msgs)  /resume #{i}")
+        return "\n".join(lines)
+
+    def _resolve_gui_session(self, ref: str) -> tuple[int, str] | None:
+        with QMutexLocker(self.db_mutex):
+            convos = self.db.list_conversations()
+        if ref.startswith("#"):
+            try:
+                idx = int(ref[1:]) - 1
+            except ValueError:
+                return None
+            c = convos[idx] if 0 <= idx < len(convos) else None
+            return (c["id"], c["title"] or "") if c else None
+        for c in convos:
+            if str(c["id"]) == ref or str(c["id"]).startswith(ref):
+                return (c["id"], c["title"] or "")
+        matches = [c for c in convos
+                   if ref.lower() in (c["title"] or "").lower()]
+        if len(matches) == 1:
+            c = matches[0]
+            return (c["id"], c["title"] or "")
+        if len(matches) > 1:
+            return None
+        return None
+
+    def _gui_resume(self, ref: str) -> str:
+        ref = ref.strip()
+        if not ref:
+            return ("Usage: /resume #<N> or /resume <conversation-id> "
+                    "(run /sessions to list)")
+        resolved = self._resolve_gui_session(ref)
+        if resolved is None:
+            return f"⚠️ No conversation matches {ref!r} — run /sessions to list."
+        cid, title = resolved
+        item = QListWidgetItem(title)
+        item.setData(Qt.ItemDataRole.UserRole, cid)
+        self._load_conversation(item)
+        with QMutexLocker(self.db_mutex):
+            n = len(self.db.get_messages(cid))
+        self._refresh_conversations()
+        return (f"▶️ Resumed conversation #{cid} {'(' + title[:40] + ')' if title else ''} "
+                f"({n} messages).")
+
+    def _start_compact(self) -> str:
+        """Compact the current conversation into a summary in a worker thread;
+        the summary becomes extra_context for the next agent run."""
+        if self.current_conv_id is None:
+            return "⚠️ Nothing to compact — start a conversation first."
+        with QMutexLocker(self.db_mutex):
+            messages = self.db.get_messages(self.current_conv_id)
+        if len(messages) < 2:
+            return "⚠️ Nothing to compact yet — need at least 2 messages."
+        try:
+            from workers import CompactWorker
+        except Exception as exc:
+            return f"⚠️ Compact unavailable: {exc}"
+        total = sum(len(m["content"]) for m in messages)
+        self._add_status(f"🗜 Compacting {len(messages)} messages ({total} chars)…")
+        self._compact_thread = CompactWorker(messages)
+        self._compact_thread.summary.connect(self._on_compact_done)
+        self._compact_thread.failed.connect(self._on_compact_failed)
+        self._compact_thread.start()
+        return "🗜 Compacting this conversation… one moment."
+
+    def _on_compact_done(self, summary: str):
+        if not summary:
+            self._add_status("⚠️ Compaction produced no summary.")
+        else:
+            self._compaction_summary = summary
+            self._add_status(f"🗜 Compaction done — {len(summary)} chars. "
+                             f"Next run uses it as compacted context.")
+        self._compact_thread.wait(3000)
+        self._compact_thread = None
+
+    def _on_compact_failed(self, err: str):
+        self._add_status(f"❌ Compaction failed: {err}")
+        self._compact_thread.wait(3000)
+        self._compact_thread = None
 
     # ── Working directory (directory-first flow) ────────────────────────
     def _select_workdir(self):
