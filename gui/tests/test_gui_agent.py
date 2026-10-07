@@ -1046,3 +1046,96 @@ def test_picked_reviewer_is_read_only_in_state_strip(gui, monkeypatch, tmp_path)
     assert _pump_until(lambda: gui.thread is None)
     assert captured == ["reviewer"]
     assert gui.agent_state_label.text() == "🤖 · Agent · reviewer · done"
+
+
+# ── 10. slash commands via real dispatcher (3.2) ─────────────────────────────
+def _enable_agent(gui, monkeypatch, tmp_path):
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    if not gui.agent_mode:
+        gui._toggle_agent_mode()
+    return d
+
+
+def test_slash_status_dispatch_through_real_executor(gui, monkeypatch,
+                                                     tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.input.setPlainText("/status")
+    gui._send()
+    assert gui.input.toPlainText() == ""          # consumed, not sent to a model
+    slash_entries = [m for m in gui._think if m["kind"] == "slash"]
+    assert slash_entries, "no slash output reached the think buffer"
+    out = slash_entries[0]["text"]
+    assert '"agents"' in out and '"tools"' in out
+
+
+def test_about_json_has_no_error_keys(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    import json as _json
+    gui.input.setPlainText("/about")
+    gui._send()
+    slash_entries = [m for m in gui._think if m["kind"] == "slash"]
+    assert slash_entries
+    data = _json.loads(slash_entries[0]["text"])
+    bad = [k for k in data if k.endswith("_error")]
+    assert not bad, f"about carried *_error keys: {bad}"
+
+
+def test_unknown_slash_reports_available_commands(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.input.setPlainText("/nope")
+    gui._send()
+    slash_entries = [m for m in gui._think if m["kind"] == "slash"]
+    assert slash_entries
+    assert "Unknown command" in slash_entries[0]["text"]
+    assert "/status" in slash_entries[0]["text"]      # names list shown
+
+
+def test_slash_model_list_never_blocks_on_picker(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.input.setPlainText("/model list")
+    gui._send()
+    slash_entries = [m for m in gui._think if m["kind"] == "slash"]
+    assert slash_entries               # returned promptly, no input() hang
+
+
+def test_slash_provider_without_args_uses_print_only_path(gui, monkeypatch,
+                                                          tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.input.setPlainText("/provider")     # would input() in the CLI
+    gui._send()
+    slash_entries = [m for m in gui._think if m["kind"] == "slash"]
+    assert slash_entries
+    low = slash_entries[0]["text"].lower()
+    assert "provider" in low or "list" in low
+
+
+def test_slash_autocomplete_popup_lists_real_commands(gui, monkeypatch,
+                                                      tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.input.setPlainText("/st")
+    gui._maybe_show_slash_completions()
+    model = gui._slash_completer.model()
+    names = [str(model.data(model.index(i, 0)))
+             for i in range(model.rowCount())]
+    assert names, "no completions offered"
+    assert any(n == "/status" for n in names)
+
+    gui._insert_slash_completion("/status")
+    assert gui.input.toPlainText(), "completion did not land in the input"
+
+
+def test_slash_off_when_chat_mode(gui, monkeypatch, tmp_path):
+    """Without agent mode a /line is ordinary chat text, not dispatched."""
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    assert not gui.agent_mode
+    gui.input.setPlainText("/status")
+    gui._maybe_show_slash_completions()
+    assert not gui._slash_completer.popup().isVisible()

@@ -18,12 +18,22 @@ import subprocess
 import sys
 import threading
 
-from PyQt6.QtCore import QMetaObject, QMutex, QMutexLocker, Qt, QTimer, QUrl, pyqtSlot
+from PyQt6.QtCore import (
+    QMetaObject,
+    QMutex,
+    QMutexLocker,
+    QStringListModel,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QFileDialog,
     QFrame,
@@ -607,6 +617,12 @@ class OllamaGUI(QMainWindow):
         self.input = QTextEdit()
         self.input.setFixedHeight(180)
         self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
+        self._slash_completer = QCompleter([], self.input)
+        self._slash_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._slash_completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        self._slash_completer.setMaxVisibleItems(8)
+        self._slash_completer.activated.connect(self._insert_slash_completion)
+        self.input.textChanged.connect(self._maybe_show_slash_completions)
         inp_row.addWidget(self.input, 1)
         v.addLayout(inp_row)
 
@@ -1395,6 +1411,14 @@ class OllamaGUI(QMainWindow):
         # would then kill the new thread.
         if self.thread and self.thread.isRunning():
             self._log("⏳ Current reply still streaming — please wait.")
+            return
+
+        # Slash commands run through the real dev-assist dispatcher while in
+        # agent mode; they answer in the think buffer, never a model run.
+        if prompt.startswith("/") and self.agent_mode:
+            self.last_prompt = prompt
+            self.input.clear()
+            self._handle_slash_command(prompt)
             return
 
         # Directory-first: never start a run without a valid working directory.
@@ -2730,6 +2754,97 @@ class OllamaGUI(QMainWindow):
         idx = self.agent_box.findData(default)
         self.agent_box.setCurrentIndex(idx if idx >= 0 else 0)
         self.agent_box.blockSignals(False)
+
+    # ── Slash commands (real dev-assist dispatcher) ───────────────────────
+    _SLASH_MAX_DISPLAY = 6000
+
+    def _slash_names(self) -> list[str]:
+        """Real command registry (builtin + config + command files + skills)."""
+        try:
+            from modules.slash_commands import command_names
+            key = self.agent_workdir or os.getcwd()
+            if (getattr(self, "_slash_names_cache", None) is None
+                    or self._slash_names_cache[0] != key):
+                self._slash_names_cache = (key, command_names(key))
+            return self._slash_names_cache[1]
+        except Exception:
+            return []
+
+    def _maybe_show_slash_completions(self):
+        """Show the `/` autocomplete popup when the input line starts with `/`.
+        complete() is deferred to the event loop — calling it synchronously
+        from textChanged crashes the Qt GUI (re-entrant popup)."""
+        text = self.input.toPlainText()
+        token = ""
+        if text.startswith("/"):
+            token = text.split()[0] if text.strip() else text
+        if not (token.startswith("/") and self.agent_mode):
+            self._slash_completer.popup().hide()
+            return
+        matches = [f"/{n}" for n in self._slash_names()
+                   if f"/{n}".startswith(token)]
+        if matches:
+            self._slash_completer.setCompletionPrefix(token)
+            self._slash_completer.setModel(QStringListModel(matches))
+            if self.input.isVisible():
+                QTimer.singleShot(0, self._slash_completer.complete)
+        else:
+            self._slash_completer.popup().hide()
+
+    def _insert_slash_completion(self, completion: str):
+        """Replace the trailing `/...` token with the completed `/command`."""
+        text = self.input.toPlainText()
+        parts = text.split()
+        if parts and parts[-1].startswith("/"):
+            parts[-1] = completion
+            self.input.setPlainText(" ".join(parts) + " ")
+
+    def _handle_slash_command(self, text: str):
+        """Dispatch `/name args` through modules.slash_commands.execute with
+        captured output; shown in the think buffer / status bubble."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        rest = (text or "").strip()[1:]
+        name, _, raw_args = rest.partition(" ")
+        name = name.strip().lower()
+        raw_args = raw_args.strip()
+        workdir = self.agent_workdir or os.getcwd()
+
+        # The CLI pickers (_cmd_model/_cmd_provider without args) call input()
+        # and would hang the GUI — send them down the print-only `list` path.
+        if not raw_args and name in ("model", "provider"):
+            raw_args = "list"
+
+        buf = io.StringIO()
+        try:
+            from rich.console import Console
+
+            from modules import slash_commands
+        except Exception as exc:
+            self._add_status(f"⚠️ Slash unavailable: {exc}")
+            return
+
+        real_console = slash_commands._console
+        slash_commands._console = Console(file=buf, width=100)
+        try:
+            with redirect_stdout(buf), redirect_stderr(buf):
+                slash_commands.execute(name, raw_args, workdir)
+        except Exception as exc:
+            self._add_status(f"⚠️ /{name} failed: {exc}")
+        finally:
+            slash_commands._console = real_console
+
+        out = buf.getvalue().strip()
+        shown = out
+        if len(shown) > self._SLASH_MAX_DISPLAY:
+            shown = shown[:self._SLASH_MAX_DISPLAY] + "\n… (truncated)"
+        if shown:
+            self._add_status(f"💻 /{name}")
+            self._think.append({"kind": "slash", "text": shown})
+            self._think_expanded = True
+            self._render_chat()
+        self._update_input_state()
 
     # ── Working directory (directory-first flow) ────────────────────────
     def _select_workdir(self):
