@@ -280,7 +280,7 @@ When the `dev-assist/` directory sits next to the GUI, the toolbar's **`🤖 Age
 
 **Stop** — the ⏹ Stop button requests a graceful stop between agent steps (a pending approval wait checks the stop flag and returns immediately). A single blocking provider call inside a step cannot be interrupted mid-completion; Stop takes effect after the current model turn returns.
 
-**CLI-only parity limits** — explicitly not wired to the GUI (reasons in `docs/gui-parity.md`): dev-assist's own session-store sync, CLI history arrow-recall, the rich banner panels, leader key-bindings, the CLI theme/provider/model `input()` pickers, folder-index merging into `core.vector_store`, `git_helper` git guidance, `tunnel_helper`, `file_tool` bulk ops, the `makefile`/`telegram` plugins, and the pre-push audit hook.
+**CLI-only parity limits** — explicitly not wired to the GUI (reasons in `docs/gui-parity.md`): dev-assist's own session-store sync, CLI history arrow-recall, the rich banner panels, leader key-bindings, the CLI theme/provider/model `input()` pickers, folder-index merging into `core.vector_store`, `git_helper` git guidance (`/git status|diff|log` — its fixers call `input()` and it has no non-interactive `diff` path; the agent can still run read-only git through its `bash` tool), `tunnel_helper`, `file_tool` bulk ops, the `makefile`/`telegram` plugins, and the pre-push audit hook.
 
 ### Ollama Manager
 

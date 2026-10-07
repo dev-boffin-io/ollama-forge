@@ -119,6 +119,23 @@ def test_readme_gui_about_status_slash_names_exist_in_code():
             f"README documents /{name} but the registry no longer registers it")
 
 
+def test_readme_git_helper_cli_only_reason_still_holds():
+    """The README/parity-doc keeps git_helper CLI-only because it has no
+    non-interactive /git status|diff|log API: fixers call input() 4x and there
+    is no diff path. If that ever changes, wire /git and update the docs."""
+    text = _readme()
+    section = _section(text, "### GUI Agent Mode — dev-assist integration")
+    assert "git_helper" in section and "CLI-only" in section
+    path = os.path.join(_ROOT, "dev-assist/modules/git_helper.py")
+    with open(path, encoding="utf-8") as f:
+        source = f.read()
+    assert source.count("input(") == 4, (
+        "git_helper input() count changed — re-evaluate the CLI-only decision")
+    for ops in ("def _fix_push", "def _fix_pull", "def _show_conflicts",
+                "def _sync_branch"):
+        assert ops in source
+
+
 def test_gui_picker_matches_agent_registry():
     from core.agents import routable_agents
     real = set(routable_agents().keys())

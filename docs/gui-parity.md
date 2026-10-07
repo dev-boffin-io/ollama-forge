@@ -84,7 +84,7 @@ does not add a separate tool surface. Two follow-ups:
 
 | Capability | dev-assist symbol | In GUI today? | Wire / decision | Effort |
 |---|---|---|---|---|
-| Git push/pull/rebase/conflict guidance | `modules.git_helper.run` | 🚫 | `run(text)` calls `input()` 4 places (86/107/137/172) → GUI would need `ask` injection. Rich yield for a GUI that has its own git delta display later. (step 3.5 candidate M) | M |
+| Git push/pull/rebase/conflict guidance | `modules.git_helper.run` | 🚫 | **Decided CLI-only (TASK 3):** `run()` dispatches by keyword to fixers with 4 `input()` prompts (86/107/137/172); its only un-prompted path is the default `_git_status()` status+log view. There is **no `diff` path**, so `/git status\|diff\|log` cannot go through it. A GUI `/git` would need an `ask` hook and a diff panel (see summary). Read-only git remains available to the agent via `core.shell.run_git` (its `bash` tool). | M | ✅ read-only status/log view exists but `diff` is missing and the fixers would hang a GUI on `input()`. Note: 4 `input()` sites are drift-guarded by `test_readme_drift.py`. |
 | AI code audit of diff | `modules.code_audit.run` | 🚫 | One-shot `run('')` → shows diff summary + prompt; non-interactive, easy `/audit`. (step 3.5 candidate S) | S |
 | Kill port | `modules.cmd_helper.fix_port` | 🚫 | `run_cmd(text)` non-interactive; could be a `task` tool prompt. Low value. | S |
 | Tunnel (cloudflared/ngrok) | `modules.tunnel_helper.run` | 🚫 | Background supervisord-style process; GUI could spawn in thread + log to think buffer. Invasive. | L |
@@ -111,4 +111,4 @@ shortcuts). GUI equivalents already exist or are in steps 3.1–3.5.
 - **3.2** slash commands: prefix-dispatch to `modules.slash_commands.execute(...)`; `/about` via `about` tool; completions popup ← `list_commands(workdir)`. **M**
 - **3.3** sessions: sidebar list/resume/new from `db.list_conversations`; `/compact` trims history + feeds `extra_context`. **M**
 - **3.4** AGENTS.md indicator: `core.instructions.discover(workdir)` → "AGENTS.md ✓/✗" in state strip (context already injected by `run_agent`, `agent.py:523`). **S**
-- **3.5** S/M leftovers in priority order: `/audit` (`code_audit.run`) → git help (add `ask` to `git_helper`) → `question` tool → provider/model `/about` info; tunnel + file-tool + persistent shell deferred to L.
+- **3.5** S/M leftovers in priority order: `/audit` (`code_audit.run`) → `question` tool → provider/model `/about` info; tunnel + file-tool + persistent shell deferred to L. **git help**: decided **CLI-only** (TASK 3) — no non-interactive diff API in `git_helper`.
