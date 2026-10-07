@@ -1455,6 +1455,11 @@ def test_slash_init_runs_agent_worker_with_rendered_template(gui, monkeypatch,
     assert len(tpl) == 1 and "▶ /init (template)" in tpl[0]["text"]
     bubbles = [m["content"] for m in gui._chat_log if m["type"] == "ai"]
     assert any("template answer" in b for b in bubbles)
+    # the typed command is recorded as a user message (DB + bubble)
+    users = [m["content"] for m in gui._chat_log if m["type"] == "user"]
+    assert users == ["/init"]
+    rows = gui.db.get_messages(gui.current_conv_id)
+    assert [r["content"] for r in rows if r["role"] == "user"] == ["/init"]
 
 
 def test_slash_review_with_args_substitutes_them(gui, monkeypatch, tmp_path):
@@ -1474,6 +1479,10 @@ def test_slash_review_with_args_substitutes_them(gui, monkeypatch, tmp_path):
     tpl = [m for m in gui._think if m["kind"] == "template"]
     assert len(tpl) == 1 and "▶ /review (template)" in tpl[0]["text"]
     assert not any("▶ /review" in s for s in _status_texts(gui))
+    users = [m["content"] for m in gui._chat_log if m["type"] == "user"]
+    assert users == ["/review HEAD~1"]
+    rows = gui.db.get_messages(gui.current_conv_id)
+    assert [r["content"] for r in rows if r["role"] == "user"] == ["/review HEAD~1"]
 
 
 def test_slash_init_write_flows_through_approval_dialog(gui, monkeypatch,

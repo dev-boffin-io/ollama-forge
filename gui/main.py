@@ -2922,7 +2922,8 @@ class OllamaGUI(QMainWindow):
             return
         if spec is not None and spec.template and spec.handler is _run_template:
             rendered = render_template(spec.template, raw_args, workdir)
-            self._start_template_run(name or "?", rendered, spec.agent)
+            user_text = f"/{name}{(' ' + raw_args) if raw_args else ''}"
+            self._start_template_run(name or "?", rendered, spec.agent, user_text)
             return
 
         # The CLI pickers (_cmd_model/_cmd_provider/_cmd_theme(s) without args)
@@ -2990,11 +2991,13 @@ class OllamaGUI(QMainWindow):
             self._render_chat()
 
     def _start_template_run(self, name: str, prompt: str,
-                            agent: str | None) -> None:
+                            agent: str | None, user_text: str) -> None:
         """Run a rendered slash template as a normal AgentWorker run — same
         approver / approval dialog / think buffer / undo as a typed prompt.
         The picked agent applies unless the template pins one (spec.agent).
-        Never blocks the GUI thread and never calls input()."""
+        The typed command is recorded as a user message so the conversation
+        history shows what was requested. Never blocks the GUI thread and
+        never calls input()."""
         from workers import AgentWorker
         agent_id = agent or (self.agent_box.currentData() or "build")
         if not self.current_conv_id:
@@ -3002,6 +3005,9 @@ class OllamaGUI(QMainWindow):
                 self.current_conv_id = self.db.create_conversation(f"/{name}")
             self.chat_title_btn.setText(f"💬  /{name}")
             self._refresh_conversations()
+        with QMutexLocker(self.db_mutex):
+            self.db.add_message(self.current_conv_id, "user", user_text)
+        self._add_user_msg(user_text)
         self._think = []
         self._think_expanded = False
         self._think.append({"kind": "template", "text": f"▶ /{name} (template)"})
