@@ -150,3 +150,32 @@ def test_bridge_prefers_bundled_dev_assist_when_frozen(tmp_path, monkeypatch):
     paths = agent_bridge._dev_assist_paths()
     assert paths and os.path.normpath(paths[0]) == os.path.normpath(str(bundled))
     assert os.path.normpath(paths[-1]).endswith("dev-assist")
+
+
+def test_readme_live_check_documented_and_skips_without_env():
+    """README documents scripts/live_check.py; with no env vars the script must
+    exit 0 and print SKIPPED (never guess a target URL)."""
+    import subprocess
+    text = _readme()
+    assert "scripts/live_check.py" in text
+    assert "FORGE_TEST_ENDPOINT" in text and "NOT VERIFIED" in text
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("FORGE_TEST_")}
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_ROOT, "scripts", "live_check.py")],
+        env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "SKIPPED" in proc.stdout
+
+
+def test_readme_live_check_unreachable_is_not_verified_exit_0():
+    import subprocess
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("FORGE_TEST_")}
+    env["FORGE_TEST_ENDPOINT"] = "http://127.0.0.1:9/v1"
+    env["FORGE_TEST_MODEL"] = "test-model"
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_ROOT, "scripts", "live_check.py")],
+        env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "NOT VERIFIED" in proc.stdout

@@ -764,6 +764,31 @@ cd dev-assist && python -m pytest tests/ -v --tb=short
 | `python-multipart >= 0.0.9` | Multipart form parsing for file uploads |
 | `Pillow >= 10.0` | Image attachment resize/compress before sending to vision models |
 
+### Live end-to-end check
+
+`scripts/live_check.py` proves the dev-assist agent loop works against a real,
+OpenAI-compatible `/chat/completions` endpoint. It is **opt-in**: without
+variables it prints `SKIPPED` and exits 0 — it never guesses a URL. Give it an
+endpoint, model, and optional bearer key:
+
+```bash
+FORGE_TEST_ENDPOINT="https://your-provider.example.com/v1" \
+FORGE_TEST_MODEL="your-model" \
+FORGE_TEST_API_KEY="..." \
+python3 scripts/live_check.py
+```
+
+It runs three checks and prints `VERIFIED` (exit 0) when all pass, `FAILED`
+(exit 1) when a reachable endpoint misbehaves, or `NOT VERIFIED` (exit 0) when
+the endpoint/model is unreachable:
+
+1. **Plain chat round trip** — a FORGE-PONG echo, which also doubles as the
+   reachability probe.
+2. **Agent run for `hi`** — the final answer must not fall back to advertising
+   its own setup (a narrow scaffolding/self-report marker list).
+3. **Agent tool-call round trip** — in a temp working directory, the agent must
+   actually call a tool (read a file) to learn a random marker and echo it.
+
 ---
 
 ## Architecture
