@@ -2417,13 +2417,16 @@ class OllamaGUI(QMainWindow):
         idx = self._streaming_ai_idx
         if final and 0 <= idx < len(self._chat_log):
             already = self._chat_log[idx]['content']
-            # `text` events already end their block with a blank line — don't
-            # stack a second one in front of the final answer.
-            sep = "\n\n" if already.strip() and not already.endswith("\n\n") else ""
-            self._append_token(sep + final)
+            # The real agent emits the last sub-task answer as a `text` event AND
+            # returns the same string — only append it when it is not already
+            # the tail of the bubble (earlier sub-task text may still differ).
+            if not already.rstrip().endswith(final):
+                sep = "" if not already.strip() else (
+                    "" if already.endswith("\n\n") else "\n\n")
+                self._append_token(sep + final)
         idx = self._streaming_ai_idx
         content = (self._chat_log[idx]['content']
-                   if 0 <= idx < len(self._chat_log) else final)
+                   if 0 <= idx < len(self._chat_log) else final).rstrip()
         self._on_done(content, 0, 0)
 
     def _on_agent_failed(self, err):

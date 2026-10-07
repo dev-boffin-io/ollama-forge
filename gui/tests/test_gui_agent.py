@@ -360,7 +360,7 @@ def test_agent_text_and_answer_share_the_bubble(gui, monkeypatch, tmp_path):
     def fake_run_agent(task, *, workdir, on_event=None, **kw):
         for kind, text in script:
             on_event(kind, text)
-        return "Hi! How can I help?"
+        return "Hello from the agent"  # SAME as text event (real case)
 
     d = tmp_path / "proj"
     d.mkdir(exist_ok=True)
@@ -377,18 +377,17 @@ def test_agent_text_and_answer_share_the_bubble(gui, monkeypatch, tmp_path):
     bubbles = _ai_contents(gui)
     assert len(bubbles) == 1
     answer = bubbles[0]
-    assert "Hello from the agent" in answer          # text event → bubble
-    assert answer.count("Hi! How can I help?") == 1  # final answer shown once
-    assert answer.index("Hello from the agent") < answer.index("Hi! How can I help?")
+    assert answer == "Hello from the agent"  # appears exactly once
+    assert answer.count("Hello from the agent") == 1
 
     # everything else is a status line
     statuses = " | ".join(_status_texts(gui))
     for marker in ("[route]", "[plan]", "[progress]", "[tool]", "[result]",
                    "[status]"):
         assert marker in statuses, marker
-    assert "Hi! How can I help?" not in statuses
+    assert "Hello from the agent" not in statuses
 
-    # persisted like any other reply
+    # persisted like any other reply — assistant content is the answer
     rows = gui.db.get_messages(gui.current_conv_id)
     assert rows[-1]["role"] == "assistant"
     assert rows[-1]["content"] == answer
@@ -396,6 +395,36 @@ def test_agent_text_and_answer_share_the_bubble(gui, monkeypatch, tmp_path):
     # stop button back to idle
     assert gui.stop_btn.text() == "🔄 Reload"
     assert gui._is_streaming is False
+
+
+def test_agent_multi_subtask_final_added_once(gui, monkeypatch, tmp_path):
+    # several sub-tasks emit their own text; the returned final answer differs
+    def fake_run_agent(task, *, workdir, on_event=None, **kw):
+        on_event("text", "sub-task 1 finding")
+        on_event("text", "sub-task 2 finding")
+        return "final synthesized answer"
+
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    gui._toggle_agent_mode()
+    gui.input.setPlainText("go")
+    gui._send()
+    assert _pump_until(lambda: gui.thread is None)
+
+    answer = _ai_contents(gui)[0]
+    assert answer.count("final synthesized answer") == 1
+    assert "sub-task 1 finding" in answer
+    assert "sub-task 2 finding" in answer
+    assert answer.endswith("final synthesized answer")
+
+    rows = gui.db.get_messages(gui.current_conv_id)
+    assert rows[-1]["content"] == answer
+    assert rows[-1]["content"].count("final synthesized answer") == 1
 
 
 def test_agent_failure_is_logged_and_thread_cleaned(gui, monkeypatch, tmp_path):
