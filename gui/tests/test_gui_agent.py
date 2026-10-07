@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from itertools import pairwise
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -149,7 +150,8 @@ def test_choosing_a_dir_enables_input_and_persists(tmp_path, monkeypatch):
         assert win.agent_workdir == str(d)
         assert win.input.isEnabled() is True
         assert win.send_btn.isEnabled() is True
-        assert str(d) in win.dir_label.text()
+        assert str(d) in win.dir_label.toolTip()
+        assert "📁" in win.dir_label.text()
 
         saved = json.loads(open(main_mod._SETTINGS_FILE, encoding="utf-8").read())
         assert saved["workdir"] == str(d)
@@ -178,7 +180,7 @@ def test_saved_settings_restore_the_dir(tmp_path, monkeypatch):
     try:
         assert win.agent_workdir == str(d)
         assert win.input.isEnabled() is True
-        assert str(d) in win.dir_label.text()
+        assert str(d) in win.dir_label.toolTip()
     finally:
         win.close()
         win.deleteLater()
@@ -820,10 +822,12 @@ def test_agent_state_strip_reflects_real_events(gui, monkeypatch, tmp_path):
     assert _pump_until(lambda: gui.thread is None)
 
     label = gui.agent_state_label.text()
-    assert "code · research" in label      # from the real route event
-    assert "2/5" in label                  # real step count from progress event
-    assert "rate limit hit" in label       # real warning text
-    assert "done" in label                 # real completion phase
+    tooltip = gui.agent_state_label.toolTip()
+    assert label.startswith("🤖 · Agent")            # visible strip preserved
+    assert "code · research" in tooltip              # from the real route event
+    assert "2/5" in tooltip                          # real step count from progress event
+    assert "rate limit hit" in tooltip               # real warning text
+    assert "done" in tooltip                         # real completion phase
     assert gui._agent_state["step"] == 2
     assert gui._agent_state["max_steps"] == 5
     assert gui._agent_state["note"] == "rate limit hit"
@@ -1529,5 +1533,91 @@ def test_slash_init_stop_works_and_never_calls_input(gui, monkeypatch,
     assert _pump_until(lambda: gui.thread is None, timeout=5)
     assert asked == [False]                     # stopped → approver denies cleanly
     assert gui.input.toPlainText() == ""
+
+
+# ── 11. top bar wrapping + eliding (narrow screens) ───────────────────────────
+TOP_BAR_WIDGETS = (
+    "model_box", "mode_btn", "crew_btn", "theme_btn", "provider_sel",
+    "mem_btn", "server_btn", "agent_btn", "agent_box", "open_dir_btn",
+    "dir_label", "auto_approve_chk", "undo_btn", "agent_state_label",
+)
+
+
+def _topbar_widgets(win):
+    return [getattr(win, name) for name in TOP_BAR_WIDGETS]
+
+
+def _expect_in_window(win, widgets, width):
+    for wid in widgets:
+        p = wid.mapTo(win, wid.rect().topLeft())
+        right = p.x() + wid.width()
+        assert p.x() >= 0, (
+            f"{wid.objectName() or wid.text()[:20]} starts off-screen at {width}px")
+        assert right <= win.width(), (
+            f"{wid.objectName() or wid.text()[:20]} clipped at {width}px "
+            f"(right={right}, win={win.width()})")
+
+
+def test_topbar_widgets_stay_inside_window_at_any_width(gui, monkeypatch,
+                                                       tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    widgets = _topbar_widgets(gui)
+    for width in (900, 1200, 1800):
+        gui.resize(width, 900)
+        gui.show()
+        _pump_until(lambda: True)
+        _expect_in_window(gui, widgets, width)
+    gui.hide()
+
+
+def _row_count(y_positions):
+    """Number of distinct rows: alignments within the same row differ by a few
+    px, real wraps by ~a full row height."""
+    ys = sorted(set(y_positions))
+    rows = 1 if ys else 0
+    for a, b in pairwise(ys):
+        if b - a > 30:
+            rows += 1
+    return rows
+
+
+def test_topbar_minimum_width_fits_900(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    assert gui.minimumSizeHint().width() <= 900, (
+        f"window minimum width {gui.minimumSizeHint().width()}px > 900px "
+        "→ it can grow off-screen")
+
+
+def test_topbar_uses_more_than_one_row_at_900(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    gui.resize(900, 900)
+    gui.show()
+    _pump_until(lambda: True)
+    widgets = [w for w in _topbar_widgets(gui) if w.isVisible()]
+    ys = [w.mapTo(gui, w.rect().topLeft()).y() for w in widgets]
+    assert _row_count(ys) >= 2, (
+        f"top bar is a single row at 900px (y positions: {sorted(ys)})")
+    # the layout behind it wraps: more rows when narrow than when wide
+    topbar = getattr(gui, "topbar", None)
+    if topbar is not None and topbar.layout() is not None:
+        fl = topbar.layout()
+        assert fl.hasHeightForWidth()
+        assert fl.heightForWidth(900) > fl.heightForWidth(1800)
+    gui.hide()
+
+
+def test_dir_label_elides_long_path_and_tooltip_keeps_full(gui, monkeypatch,
+                                                           tmp_path):
+    long_dir = tmp_path / ("sub" * 60)
+    long_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(long_dir)))
+    gui._select_workdir()
+    gui._update_dir_label()
+    full = f"📁 {long_dir}"
+    assert gui.dir_label.toolTip() == str(long_dir)      # full path survives
+    assert gui.dir_label.text() != full                  # visual text is elided
+    assert gui.dir_label.text().startswith("📁 ")        # but keeps the icon
+    assert len(gui.dir_label.text()) < len(full)
 
 

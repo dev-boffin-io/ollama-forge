@@ -29,7 +29,7 @@ from PyQt6.QtCore import (
     QUrl,
     pyqtSlot,
 )
-from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
+from PyQt6.QtGui import QFont, QFontDatabase, QGuiApplication, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 from chat_renderer import chat_html
 from crew_dialogs import CREW_TEMPLATES, CrewConfigDialog
 from database import DB_CLASS
+from flow_layout import FlowLayout
 from notes_dialog import NotesPanel
 from ollama_client import OllamaClient
 from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
@@ -107,7 +108,7 @@ class OllamaGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OLLAMA • Local AI")
-        self.resize(1800, 900)
+        self._apply_bounded_window_size()
 
         self.db          = DB_CLASS()
         self.db_mutex    = QMutex()
@@ -411,16 +412,24 @@ class OllamaGUI(QMainWindow):
         popup_v.addWidget(self.conv_list)
         self._chat_popup.hide()
 
-        # Top bar
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Model:"))
+        # Top bar — a wrapping FlowLayout so nothing is clipped on narrow screens
+        self.topbar = QWidget()
+        top = FlowLayout(self.topbar, h_spacing=8, v_spacing=8,
+                         margins=(4, 4, 4, 4))
+
+        # "Model:" and its combo stay together in one small widget.
+        self.model_wrap = QWidget()
+        model_row = QHBoxLayout(self.model_wrap)
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(4)
+        model_row.addWidget(QLabel("Model:"))
         self.model_box = QComboBox()
-        self.model_box.setMinimumWidth(500)
+        self.model_box.setMinimumWidth(260)
         self.model_box.setMinimumHeight(60)
         self.model_box.currentIndexChanged.connect(self._update_attach_btn)
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
-        top.addWidget(self.model_box)
-        top.addStretch()
+        model_row.addWidget(self.model_box, 1)
+        top.addWidget(self.model_wrap)
 
         self.mode_btn = QPushButton("⚡ Crew Mode: OFF")
         self.mode_btn.setMinimumHeight(60)
@@ -517,7 +526,7 @@ class OllamaGUI(QMainWindow):
             "Live agent state — fed only by real agent events")
         self._update_agent_state()
         top.addWidget(self.agent_state_label)
-        v.addLayout(top)
+        v.addWidget(self.topbar)
 
         # ── API key row (hidden until a key-needing provider is active) ─
         self.key_row = QWidget()
@@ -2523,7 +2532,11 @@ class OllamaGUI(QMainWindow):
             bits.append(st["note"])
         if self.agent_mode and self.agent_workdir and os.path.isdir(self.agent_workdir):
             bits.append(self._agents_md_bit())
-        self.agent_state_label.setText(" · ".join(bits))
+        full = " · ".join(bits)
+        self._elide_label(
+            self.agent_state_label, full,
+            f"{full}\nLive agent state — fed only by real agent events"
+            if full else "Live agent state — fed only by real agent events")
 
     def _discover_agents(self, workdir: str) -> list:
         try:
@@ -3160,13 +3173,48 @@ class OllamaGUI(QMainWindow):
             return
         self._select_workdir()
 
+    def _elide_label(self, label: QLabel, text: str, tooltip: str,
+                     max_width: int = 420) -> None:
+        """Cap a label's width and right-ellipsize long text; the full text
+        stays in the tooltip (and on the label as `_elide_full` for resize-time
+        re-elision). Recomputed on resize so nothing gets clipped."""
+        label._elide_full = text
+        label.setToolTip(tooltip)
+        fm = label.fontMetrics()
+        fit = min(max_width, fm.horizontalAdvance(text) + 10)
+        label.setFixedWidth(max(fit, 60))
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight,
+                               max(fit, 60) - 6)
+        label.setText(elided)
+
+    def _apply_bounded_window_size(self) -> None:
+        """Resize to at most (~1800x900), clamped to the available screen so the
+        window always fits on screen. Falls back to the default offscreen."""
+        try:
+            screen = QGuiApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen is not None else None
+        except Exception:
+            avail = None
+        if avail is None:
+            self.resize(1800, 900)
+            return
+        self.resize(min(1800, avail.width() - 40),
+                    min(900, avail.height() - 80))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        for label in (self.dir_label, self.agent_state_label):
+            full = getattr(label, "_elide_full", None)
+            if full:
+                self._elide_label(label, full, label.toolTip())
+
     def _update_dir_label(self):
         if self.agent_workdir and os.path.isdir(self.agent_workdir):
-            self.dir_label.setText(f"📁 {self.agent_workdir}")
-            self.dir_label.setToolTip(self.agent_workdir)
+            self._elide_label(self.dir_label, f"📁 {self.agent_workdir}",
+                              str(self.agent_workdir))
         else:
-            self.dir_label.setText("📁 No directory selected")
-            self.dir_label.setToolTip("Choose a working directory (📁 Open Dir)")
+            self._elide_label(self.dir_label, "📁 No directory selected",
+                              "Choose a working directory (📁 Open Dir)")
 
     def _update_input_state(self, server_ok: bool | None = None):
         """THE single gate for chat input/Send: enabled only when a valid
