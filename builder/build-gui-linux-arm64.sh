@@ -195,6 +195,7 @@ cd "$GUI_DIR"
     --windowed \
     --name Ollama-ai-gui-arm64 \
     --clean \
+    --add-data "$PROJECT_ROOT/dev-assist:dev-assist" \
     "${HIDDEN[@]}" \
     "${EXCLUDED[@]}" \
     main.py

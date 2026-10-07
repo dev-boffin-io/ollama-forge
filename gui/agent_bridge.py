@@ -1,12 +1,26 @@
 import os
 import sys
 
+
+def _dev_assist_paths() -> list[str]:
+    """Candidate dev-assist roots, in priority order (frozen bundle first)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = []
+    bundled = os.path.join(getattr(sys, "_MEIPASS", ""), "dev-assist")
+    if bundled and os.path.isdir(bundled):
+        candidates.append(bundled)
+    source = os.path.join(root, "dev-assist")
+    if os.path.isdir(source):
+        candidates.append(source)
+    return candidates
+
+
 try:
-    # Add dev-assist to path for source runs
-    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _DA = os.path.join(_ROOT, "dev-assist")
-    if _DA not in sys.path:
-        sys.path.insert(0, _DA)
+    # Add dev-assist to path for source runs, and support the frozen
+    # PyInstaller layout where it ships as _MEIPASS/dev-assist.
+    for _candidate in _dev_assist_paths():
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
     from core import agent as da_agent
 except Exception as e:
     da_agent = None

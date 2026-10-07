@@ -1304,6 +1304,7 @@ def test_audit_passes_raw_args_through(gui, tmp_path, monkeypatch):
 
 def test_audit_blocks_input_until_done(gui, tmp_path, monkeypatch):
     import threading
+
     from modules import code_audit
     gate = threading.Event()
 
@@ -1337,6 +1338,7 @@ def test_question_handler_wired_and_cleared(gui):
 def test_question_tool_roundtrip_with_gui_dialog(gui, tmp_path, monkeypatch):
     from PyQt6.QtCore import QThread as _QThread
     from PyQt6.QtWidgets import QInputDialog
+
     from core import tools
     picks = iter(["refactor", "✍️ Type your own answer"])
 

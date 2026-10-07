@@ -140,6 +140,7 @@ cd /d "%GUI_DIR%"
     --windowed ^
     --name Ollama-ai-gui ^
     --clean ^
+    --add-data "%PROJECT_ROOT%\dev-assist;dev-assist" ^
     %HIDDEN% ^
     %EXCLUDED% ^
     main.py

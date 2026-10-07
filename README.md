@@ -29,7 +29,7 @@ The suite ships as standalone **PyInstaller single-file binaries** with no Pytho
 | Component | Binary | Role |
 |-----------|--------|------|
 | [**ollama-main**](#ollama-main) | `ollama-main` | CLI lifecycle manager for the Ollama binary — install, upgrade, update-check, uninstall |
-| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with 8 AI providers (Ollama, OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom), FAISS RAG, vision models, file/ZIP attachments, markdown rendering, notes panel, persistent long-term memory, and crew multi-agent mode |
+| [**Ollama GUI**](#ollama-gui) | `Ollama-ai-gui` | Full-featured PyQt6 desktop chat with 8 AI providers (Ollama, OpenAI, Anthropic, Groq, OpenRouter, Mistral, Azure, custom), FAISS RAG, vision models, file/ZIP attachments, markdown rendering, notes panel, persistent long-term memory, crew multi-agent mode, and dev-assist **agent mode** (tool-calling agent, slash commands, diff approvals, undo) |
 | [**dev-assist**](#dev-assist) | `da` | AI-powered DevOps assistant — terminal REPL + FastAPI web UI with semantic code RAG, an agent that reads/edits files and runs commands on its own (plain chat triggers it automatically), shell execution, git helpers, tunnel management, and multi-provider AI |
 
 Part of the [dev-boffin-io](https://github.com/dev-boffin-io) **Forge Suite** — privacy-first developer tooling for Linux.
@@ -258,6 +258,15 @@ Templates are starting points. Every field is fully editable: agent role name, m
 #### Custom crews
 
 The `CrewConfigDialog` presents a scrollable list of agent cards. Each card exposes model selector, role name, system prompt, and input prompt template fields. Crews are persisted in the `crews` SQLite table. One crew can be marked as the default, applied automatically to new conversations.
+
+### GUI Agent Mode — dev-assist integration
+
+When the `dev-assist/` directory sits next to the GUI, the toolbar's **`🤖 Agent: OFF`** toggle flips on a real agent loop driven by **dev-assist's own `core.agents` registry and `core.agent.run_agent`** — not a reimplementation. The agent reads/edits files and runs commands in the chosen working directory, streams structured events into a collapsible **think buffer** under the chat, and gates destructive tools behind in-window **approval dialogs with real diff previews** (`apply_patch`/`edit_file`/`write_file`/`bash`). Run results are snapshotted by `core.change_tracker`, so a completed run offers **Undo** that reverts every touched file.
+
+- **Agent picker** — a combo beside the toggle lets you pick the agent for each run (`build`, `coder`, `reviewer`, `explore`, `general`, plus any user-defined agents in dev-assist), prefilled from dev-assist's default agent. The live "Agent state" strip shows the picked agent, current phase, step budget, and active tool — built only from real agent events.
+- **AGENTS.md indicator** — the state strip shows `📋 AGENTS.md ✓/✗` for the working directory, computed from dev-assist's `core.instructions.discover`; instructions from those files are already injected into every agent prompt by `run_agent`.
+- **Slash commands** — typing `/` in agent mode completes against dev-assist's real slash registry and dispatches through `modules.slash_commands.execute`, so the GUI speaks exactly the commands the CLI does: `/model` and `/provider` (print-only `list` path so the CLI pickers never hang), `/sessions`, `/new`, `/resume #N`, `/compact` (re-runs the GUI conversation through dev-assist's `compact_context` and feeds the summary to the next run), and `/help`. **`/audit`** is handled the same way but invokes the real `modules.code_audit` review on a worker thread.
+- **Question tool** — when the model invokes its `question` tool, dev-assist's pluggable renderer is wired to `QInputDialog` while agent mode is ON (restored to the CLI default when toggled OFF). Dialog-free runs (no models, headless) stay unaffected.
 
 ### Ollama Manager
 
