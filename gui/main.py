@@ -19,6 +19,7 @@ import sys
 import threading
 
 from PyQt6.QtCore import (
+    Q_ARG,
     QMetaObject,
     QMutex,
     QMutexLocker,
@@ -63,6 +64,7 @@ from ollama_client import OllamaClient
 from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
 from providers import PROVIDER_ORDER, PROVIDERS, base_url_for, env_key, get_client
 from workers import (
+    AuditWorker,
     CrewChatWorker,
     RAGBuildWorker,
     SmartChatWorker,
@@ -175,6 +177,8 @@ class OllamaGUI(QMainWindow):
         self._is_streaming     = False
         self._rag_busy        = False        # RAG indexing disables chat input
         self._streaming_ai_idx = -1           # index of the AI message being streamed
+        self._audit_thread     = None         # /audit runs off the GUI thread
+        self._audit_running   = False         # gates input while /audit runs
 
         # Ollama server state
         self._server_running = False
@@ -2738,6 +2742,11 @@ class OllamaGUI(QMainWindow):
         if self.agent_mode:
             self.agent_mode = False
             self.agent_btn.setText("🤖 Agent: OFF")
+            try:
+                from core import tools as _tools
+                _tools.set_question_handler(None)   # never leak the GUI dialog into CLI
+            except Exception:
+                pass
             self._agent_state = {"phase": "idle", "agent": "", "step": 0,
                                  "max_steps": 0, "tool": "", "note": ""}
             self._update_agent_state()
@@ -2755,10 +2764,50 @@ class OllamaGUI(QMainWindow):
             return
         self.agent_mode = True
         self.agent_btn.setText("🤖 Agent: ON")
+        try:
+            from core import tools as _tools
+            _tools.set_question_handler(self._gui_question_handler)
+        except Exception:
+            pass
         if self.agent_box.count() == 0:
             self._populate_agent_picker()
         self._update_agent_state()
         self._add_status("🤖 Agent mode ON")
+
+    def _gui_question_handler(self, questions: list[dict]) -> list[list[str] | None]:
+        """Question-tool renderer: marshal to the GUI thread, show Qt dialogs.
+        Runs in the agent worker thread — the GUI thread is free while the
+        agent runs, so a blocking queued invocation is safe here."""
+        answers: list[list[str]] = []
+        if not questions:
+            return answers
+        QMetaObject.invokeMethod(
+            self, "_ask_questions_gui",
+            Qt.ConnectionType.BlockingQueuedConnection,
+            Q_ARG(object, questions), Q_ARG(object, answers))
+        return answers or [None] * len(questions)
+
+    @pyqtSlot(object, object)
+    def _ask_questions_gui(self, questions: list[dict],
+                           answers: list[list[str]]):
+        """GUI-thread half of the question handler: one dialog per question."""
+        for q in questions:
+            options = [o.get("label") or "?" for o in q.get("options") or []]
+            custom = bool(q.get("custom", True))
+            if custom:
+                options.append("✍️ Type your own answer")
+            header = q.get("header") or "Answer required"
+            item, ok = QInputDialog.getItem(
+                self, header, q.get("question", "?"), options, 0, False)
+            if not ok or not item:
+                answers.append(None)
+                continue
+            if custom and item == options[-1]:
+                text, ok = QInputDialog.getText(
+                    self, header, q.get("question", "?"))
+                answers.append([text] if ok and text.strip() else None)
+            else:
+                answers.append([item])
 
     def _populate_agent_picker(self):
         """Fill the agent combo from dev-assist's real routable registry
@@ -2852,6 +2901,11 @@ class OllamaGUI(QMainWindow):
             self._update_input_state()
             return
 
+        # /audit runs the real dev-assist code audit off the GUI thread.
+        if name == "audit":
+            self._start_audit(raw_args)
+            return
+
         # The CLI pickers (_cmd_model/_cmd_provider without args) call input()
         # and would hang the GUI — send them down the print-only `list` path.
         if not raw_args and name in ("model", "provider"):
@@ -2878,6 +2932,31 @@ class OllamaGUI(QMainWindow):
 
         self._show_slash_output(name, buf.getvalue().strip())
         self._update_input_state()
+
+    def _start_audit(self, raw_args: str = ""):
+        """Run the real dev-assist code audit on the worker thread."""
+        if self._audit_thread and self._audit_thread.isRunning():
+            self._add_status("⚠️ /audit already running")
+            return
+        self._audit_thread = AuditWorker(raw_args)
+        self._audit_thread.done.connect(self._on_audit_done)
+        self._audit_thread.failed.connect(self._on_audit_failed)
+        self._audit_running = True
+        self._add_status("🔍 /audit running…")
+        self._update_input_state()
+        self._audit_thread.start()
+
+    def _on_audit_done(self, text: str):
+        self._audit_thread = None
+        self._audit_running = False
+        self._update_input_state()
+        self._show_slash_output("audit", text or "✅ Audit complete — no output.")
+
+    def _on_audit_failed(self, msg: str):
+        self._audit_thread = None
+        self._audit_running = False
+        self._update_input_state()
+        self._add_status(f"⚠️ /audit failed: {msg}")
 
     def _show_slash_output(self, name: str, out: str):
         """Ship a slash command's captured output to the think buffer."""
@@ -3036,7 +3115,7 @@ class OllamaGUI(QMainWindow):
         if server_ok is None:
             server_ok = bool(self._server_running) or bool(self.api_mode)
         has_dir = bool(self.agent_workdir and os.path.isdir(self.agent_workdir))
-        busy = self._rag_busy or bool(self._is_streaming)
+        busy = self._rag_busy or bool(self._is_streaming) or bool(self._audit_running)
         enabled = has_dir and server_ok and not busy
         self.input.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)

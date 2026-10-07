@@ -1268,3 +1268,112 @@ def test_agents_md_indicator_absent_outside_agent_mode(gui, monkeypatch,
                         staticmethod(lambda *a, **k: str(tmp_path)))
     gui._select_workdir()
     assert "AGENTS.md" not in gui.agent_state_label.text()
+
+
+# ── 13. /audit + question tool wiring (3.5) ──────────────────────────────────
+def test_slash_audit_runs_real_code_audit_off_thread(gui, tmp_path, monkeypatch):
+    from modules import code_audit
+    called = {}
+
+    def fake_run(text):
+        called["args"] = text
+        print(f"AUDIT OUTPUT for args='{text}'")
+    monkeypatch.setattr(code_audit, "run", fake_run)
+    gui.agent_mode = True
+    gui.agent_workdir = str(tmp_path)
+    gui._handle_slash_command("/audit")
+    assert _pump_until(lambda: "args" in called)
+    assert called["args"] == ""
+    assert _pump_until(lambda: any(
+        e.get("kind") == "slash" and "AUDIT OUTPUT" in e.get("text", "")
+        for e in gui._think))
+    assert gui._audit_thread is None
+
+
+def test_audit_passes_raw_args_through(gui, tmp_path, monkeypatch):
+    from modules import code_audit
+    called = {}
+    monkeypatch.setattr(code_audit, "run",
+                        lambda t: called.setdefault("args", t))
+    gui.agent_mode = True
+    gui.agent_workdir = str(tmp_path)
+    gui._handle_slash_command("/audit --no-sensitive")
+    assert _pump_until(lambda: "args" in called)
+    assert called["args"] == "--no-sensitive"
+
+
+def test_audit_blocks_input_until_done(gui, tmp_path, monkeypatch):
+    import threading
+    from modules import code_audit
+    gate = threading.Event()
+
+    def slow_run(text):
+        print("AUDIT START")
+        gate.wait(5)
+        print("AUDIT END")
+    monkeypatch.setattr(code_audit, "run", slow_run)
+    gui.agent_mode = True
+    gui.agent_workdir = str(tmp_path)
+    gui._handle_slash_command("/audit")
+    assert gui._audit_running
+    assert not gui.send_btn.isEnabled()
+    gate.set()
+    assert _pump_until(lambda: gui._audit_thread is None)
+    assert not gui._audit_running
+    assert gui.send_btn.isEnabled()
+
+
+def test_question_handler_wired_and_cleared(gui):
+    from core.toolimpl import store
+    gui._toggle_agent_mode()          # ON installs the GUI renderer
+    handler = store.get_question_handler()
+    assert handler is not None
+    assert handler.__self__ is gui
+    assert handler.__func__ is gui._gui_question_handler.__func__
+    gui._toggle_agent_mode()          # OFF restores the CLI default
+    assert store.get_question_handler() is None
+
+
+def test_question_tool_roundtrip_with_gui_dialog(gui, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QThread as _QThread
+    from PyQt6.QtWidgets import QInputDialog
+    from core import tools
+    picks = iter(["refactor", "✍️ Type your own answer"])
+
+    def fake_get_item(parent, title, label, items, current=0, editable=False,
+                      *a, **k):
+        return next(picks), True
+
+    def fake_get_text(parent, title, label, *a, **k):
+        return "custom answer", True
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(fake_get_item))
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(fake_get_text))
+    gui._toggle_agent_mode()          # installs the GUI handler
+
+    questions = [{
+        "question": "Which approach?",
+        "header": "Choose", "multiple": False, "custom": True,
+        "options": [{"label": "refactor", "description": ""},
+                    {"label": "rewrite", "description": ""}],
+    }, {
+        "question": "Any notes?",
+        "header": "Notes", "multiple": False, "custom": True,
+        "options": [{"label": "none", "description": ""}],
+    }]
+
+    class _Runner(_QThread):
+        def __init__(self, fn):
+            super().__init__()
+            self.fn = fn
+            self.out = None
+
+        def run(self):
+            self.out = self.fn()
+
+    runner = _Runner(lambda: tools._tool_question(
+        {"questions": questions}, str(tmp_path)))
+    runner.start()
+    assert _pump_until(lambda: runner.out is not None)
+    assert runner.wait(4000)
+    assert '"Which approach?"="refactor"' in runner.out
+    assert '"Any notes?"="custom answer"' in runner.out

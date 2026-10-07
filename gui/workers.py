@@ -483,6 +483,39 @@ class CodeRunWorker(_StopMixin, QThread):
         self.finished.emit()
 
 
+# ── Code audit worker (dev-assist modules.code_audit) ─────────────────────────
+class AuditWorker(QThread):
+    done   = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, args: str = ""):
+        QThread.__init__(self)
+        self.args = args
+
+    def run(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        buf = io.StringIO()
+        try:
+            from rich.console import Console
+
+            from modules import code_audit, slash_commands
+        except Exception as e:
+            self.failed.emit(f"code_audit unavailable: {e}")
+            return
+        real_console = slash_commands._console
+        slash_commands._console = Console(file=buf, width=100)
+        try:
+            with redirect_stdout(buf), redirect_stderr(buf):
+                code_audit.run(self.args)
+        except Exception as e:
+            self.failed.emit(str(e))
+        finally:
+            slash_commands._console = real_console
+        self.done.emit(buf.getvalue().strip())
+
+
 # ── Session compaction worker (dev-assist compact_context) ───────────────────
 class CompactWorker(QThread):
     summary = pyqtSignal(str)
