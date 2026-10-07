@@ -4,14 +4,12 @@ workers.py — QThread workers (PyQt6).
 DirectChat, CrewChat, RAGBuild, GroqChat, SmartChat, CodeRun.
 All heavy work off the GUI thread.
 """
-import copy
-import os
 import time
 
 from PyQt6.QtCore import QMutex, QMutexLocker, QThread, pyqtSignal
 
-from ollama_client import OllamaClient
 from groq_client import GroqClient
+from ollama_client import OllamaClient
 from providers import get_client
 
 _FLUSH_INTERVAL = 0.12
@@ -481,3 +479,61 @@ class CodeRunWorker(_StopMixin, QThread):
             self.run_result.emit(res)
 
         self.finished.emit()
+
+
+# ── Dev-assist agent worker ───────────────────────────────────────────────────
+class AgentWorker(_StopMixin, QThread):
+    event  = pyqtSignal(str, str)   # kind, text
+    done   = pyqtSignal(str)        # final answer — NOT QThread.finished
+    failed = pyqtSignal(str)
+
+    def __init__(self, task: str, workdir: str, agent_name: str = "build",
+                 max_steps: int = 24, extra_context: str = ""):
+        QThread.__init__(self)
+        _StopMixin.__init__(self)
+        self.task = task
+        self.workdir = workdir
+        self.agent_name = agent_name
+        self.max_steps = max_steps
+        self.extra_context = extra_context
+        self._result = ""
+
+    def run(self):
+        try:
+            from agent_bridge import run_agent
+
+            # Same destructive-tool list the agent loop itself gates on —
+            # never a hand-written copy.
+            try:
+                from core.tools import DESTRUCTIVE_TOOLS
+
+                def is_destructive(name: str) -> bool:
+                    return name in DESTRUCTIVE_TOOLS
+            except Exception:
+                from core.permissions import is_destructive
+
+            def approver(name, args):
+                return not is_destructive(name)
+
+            def on_event(kind, text):
+                if not self.is_running():
+                    return
+                self.event.emit(kind, text)
+
+            res = run_agent(
+                self.task,
+                workdir=self.workdir,
+                approver=approver,
+                on_event=on_event,
+                max_steps=self.max_steps,
+                agent=self.agent_name,
+                extra_context=self.extra_context,
+            )
+        except Exception as e:
+            if self.is_running():
+                self.failed.emit(str(e))
+            return
+        if not self.is_running():
+            return
+        self._result = res or ""
+        self.done.emit(self._result)

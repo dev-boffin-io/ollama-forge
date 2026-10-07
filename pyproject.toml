@@ -121,7 +121,7 @@ exclude = ["tests*", "builder*", "dist*", "build*"]
 # ─────────────────────────────────────────────────────────────────────────────
 
 [tool.pytest.ini_options]
-testpaths       = ["dev-assist/tests"]
+testpaths       = ["dev-assist/tests", "gui/tests"]
 asyncio_mode    = "auto"
 addopts         = "-v --tb=short"
 

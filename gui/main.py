@@ -9,7 +9,6 @@ Clean architecture:
   crew_dialogs.py   — Crew config UI
   main.py           — This file: GUI only
 """
-import base64
 import copy
 import glob
 import json
@@ -17,31 +16,45 @@ import os
 import subprocess
 import sys
 import threading
-import time
 
-from PyQt6.QtCore import Qt, QMutex, QMutexLocker, QMetaObject, QTimer, QUrl, pyqtSlot
+from PyQt6.QtCore import QMetaObject, QMutex, QMutexLocker, Qt, QTimer, QUrl, pyqtSlot
 from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
     QFrame,
-    QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QTextEdit, QTextBrowser, QVBoxLayout, QWidget,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QTextBrowser,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-from database import DB_CLASS
-from ollama_client import OllamaClient
-from providers import PROVIDERS, PROVIDER_ORDER, get_client, env_key, base_url_for
-from workers import (
-    DirectChatWorker, CrewChatWorker, RAGBuildWorker,
-    GroqChatWorker, SmartChatWorker,
-)
 from chat_renderer import chat_html
-from crew_dialogs import CrewConfigDialog, CREW_TEMPLATES
-from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
+from crew_dialogs import CREW_TEMPLATES, CrewConfigDialog
+from database import DB_CLASS
 from notes_dialog import NotesPanel
-
+from ollama_client import OllamaClient
+from ollama_manager.helpers import autodetect_ollama, load_ollama_bin
+from providers import PROVIDER_ORDER, PROVIDERS, base_url_for, env_key, get_client
+from workers import (
+    CrewChatWorker,
+    RAGBuildWorker,
+    SmartChatWorker,
+)
 
 # Persistent settings file — stores theme and Groq API key
 _CONFIG_DIR  = os.path.join(os.path.expanduser("~"), ".ollama_gui")
@@ -120,6 +133,11 @@ class OllamaGUI(QMainWindow):
         self.api_key     = env_key(self.provider_id)
         self._saved_model  = ""   # restored by _load_settings below
 
+        # Agent mode — directory-first: chat needs a valid working directory.
+        # Declared before _load_settings() so a persisted directory survives.
+        self.agent_mode    = False
+        self.agent_workdir = None
+
         self._load_settings()   # overwrite defaults with persisted values
         self._client = OllamaClient(host=self.ollama_host)  # re-point at saved host
 
@@ -142,7 +160,7 @@ class OllamaGUI(QMainWindow):
         self._server_poll_busy = False  # prevent overlapping poll threads
 
         # RAG — lazy-loaded
-        self._rag: "RAGIndex | None" = None   # noqa: F821
+        self._rag: RAGIndex | None = None   # noqa: F821
 
         self._init_ui()
         self._apply_provider_ui()
@@ -158,6 +176,12 @@ class OllamaGUI(QMainWindow):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_server)
         self._poll_timer.start(5000)
+
+        # Directory-first flow: reflect the restored workdir, gate chat input
+        # on it, and — with no valid saved directory — ask for one right away.
+        self._update_dir_label()
+        self._update_input_state()
+        self._maybe_select_workdir()
 
     # ================================================================ #
     #  UI BUILD                                                          #
@@ -416,6 +440,25 @@ class OllamaGUI(QMainWindow):
         self.server_btn.setMinimumWidth(220)
         self.server_btn.clicked.connect(self._toggle_server)
         top.addWidget(self.server_btn)
+
+        self.agent_btn = QPushButton("🤖 Agent: OFF")
+        self.agent_btn.setMinimumHeight(60)
+        self.agent_btn.setMinimumWidth(180)
+        self.agent_btn.setToolTip("Agent mode — dev-assist works in a directory")
+        self.agent_btn.clicked.connect(self._toggle_agent_mode)
+        top.addWidget(self.agent_btn)
+
+        self.open_dir_btn = QPushButton("📁 Open Dir")
+        self.open_dir_btn.setMinimumHeight(60)
+        self.open_dir_btn.setMinimumWidth(180)
+        self.open_dir_btn.setToolTip("Choose the working directory for chat / agent mode")
+        self.open_dir_btn.clicked.connect(self._select_workdir)
+        top.addWidget(self.open_dir_btn)
+
+        self.dir_label = QLabel("📁 No directory selected")
+        self.dir_label.setMinimumHeight(60)
+        self.dir_label.setToolTip("Current working directory")
+        top.addWidget(self.dir_label)
         v.addLayout(top)
 
         # ── API key row (hidden until a key-needing provider is active) ─
@@ -618,45 +661,45 @@ class OllamaGUI(QMainWindow):
                     border-radius:8px; }
                         """)
         else:
-            self.setStyleSheet(base + f"""
-                QMainWindow, QWidget {{ background: #f0f2f5; color: #1a1a2e; }}
-                QTextBrowser, QTextEdit {{ background: #ffffff; color: #1a1a2e;
-                    border: 1px solid #c8cdd4; }}
-                QListWidget {{ background: #ffffff; color: #1a1a2e;
-                    border: 1px solid #d0d5dd; padding: 4px; }}
-                QListWidget::item:hover    {{ background: #e8f0fe; }}
-                QListWidget::item:selected {{ background: #1a73e8; color: white;
-                    font-weight: bold; }}
-                QPushButton {{ background: #1a73e8; color: white; }}
-                QPushButton:hover {{ background: #1557b0; }}
-                QPushButton:disabled {{ background: #c8d8f0; color: #888; }}
-                QComboBox, QLineEdit {{ background: #ffffff; color: #1a1a2e;
-                    border: 1px solid #c8cdd4; }}
-                QComboBox::drop-down {{ border: none; }}
-                QProgressBar {{ background: #e0e7ef; }}
-                QProgressBar::chunk {{ background: #1a73e8; }}
-                QScrollBar:vertical {{ background: #e8eaf0; width: 8px; }}
-                QScrollBar::handle:vertical {{ background: #aab; border-radius: 4px; }}
-                QPushButton#srvBtn  {{ background:#1a7f3c; color:white; font-weight:bold; }}
-                QPushButton#srvBtn:hover {{ background:#145f2e; }}
-                QPushButton#srvBtn[running="false"] {{ background:#8b0000; color:white; }}
-                QPushButton#srvBtn[running="false"]:hover {{ background:#6b0000; }}
-                QPushButton#stopBtn {{ background:#2e7d32; color:white; font-weight:bold; }}
-                QPushButton#stopBtn:hover {{ background:#1b5e20; }}
-                QPushButton#stopBtn[active="true"] {{ background:#c62828; }}
-                QPushButton#stopBtn[active="true"]:hover {{ background:#b71c1c; }}
-                QPushButton#crewBtn {{ background:#1a73e8; color:white; }}
-                QPushButton#crewBtn[active="true"] {{ background:#1a7f3c; color:white; font-weight:bold; }}
-                QComboBox#providerSel {{ background:#eef2f9; color:#1a1a2e; font-weight:bold;
-                    border:1px solid #c8cdd4; border-radius:8px; padding:8px; }}
-                QPushButton#chatTitleBtn {{ background:#e8f0fe; color:#1a4f8f;
-                    border:1px solid #b8cef8; text-align:left; padding-left:14px; }}
-                QPushButton#chatTitleBtn:hover {{ background:#d2e3fc; }}
-                QPushButton#drawerBtn {{ background:#e8edf5; color:#1a1a2e;
-                    font-size:28px; border:1px solid #c8cdd4; border-radius:8px; }}
-                QPushButton#drawerBtn:hover {{ background:#d8e0ec; }}
-                QFrame#chatPopup {{ background:#ffffff; border:1px solid #c8cdd4;
-                    border-radius:8px; }}
+            self.setStyleSheet(base + """
+                QMainWindow, QWidget { background: #f0f2f5; color: #1a1a2e; }
+                QTextBrowser, QTextEdit { background: #ffffff; color: #1a1a2e;
+                    border: 1px solid #c8cdd4; }
+                QListWidget { background: #ffffff; color: #1a1a2e;
+                    border: 1px solid #d0d5dd; padding: 4px; }
+                QListWidget::item:hover    { background: #e8f0fe; }
+                QListWidget::item:selected { background: #1a73e8; color: white;
+                    font-weight: bold; }
+                QPushButton { background: #1a73e8; color: white; }
+                QPushButton:hover { background: #1557b0; }
+                QPushButton:disabled { background: #c8d8f0; color: #888; }
+                QComboBox, QLineEdit { background: #ffffff; color: #1a1a2e;
+                    border: 1px solid #c8cdd4; }
+                QComboBox::drop-down { border: none; }
+                QProgressBar { background: #e0e7ef; }
+                QProgressBar::chunk { background: #1a73e8; }
+                QScrollBar:vertical { background: #e8eaf0; width: 8px; }
+                QScrollBar::handle:vertical { background: #aab; border-radius: 4px; }
+                QPushButton#srvBtn  { background:#1a7f3c; color:white; font-weight:bold; }
+                QPushButton#srvBtn:hover { background:#145f2e; }
+                QPushButton#srvBtn[running="false"] { background:#8b0000; color:white; }
+                QPushButton#srvBtn[running="false"]:hover { background:#6b0000; }
+                QPushButton#stopBtn { background:#2e7d32; color:white; font-weight:bold; }
+                QPushButton#stopBtn:hover { background:#1b5e20; }
+                QPushButton#stopBtn[active="true"] { background:#c62828; }
+                QPushButton#stopBtn[active="true"]:hover { background:#b71c1c; }
+                QPushButton#crewBtn { background:#1a73e8; color:white; }
+                QPushButton#crewBtn[active="true"] { background:#1a7f3c; color:white; font-weight:bold; }
+                QComboBox#providerSel { background:#eef2f9; color:#1a1a2e; font-weight:bold;
+                    border:1px solid #c8cdd4; border-radius:8px; padding:8px; }
+                QPushButton#chatTitleBtn { background:#e8f0fe; color:#1a4f8f;
+                    border:1px solid #b8cef8; text-align:left; padding-left:14px; }
+                QPushButton#chatTitleBtn:hover { background:#d2e3fc; }
+                QPushButton#drawerBtn { background:#e8edf5; color:#1a1a2e;
+                    font-size:28px; border:1px solid #c8cdd4; border-radius:8px; }
+                QPushButton#drawerBtn:hover { background:#d8e0ec; }
+                QFrame#chatPopup { background:#ffffff; border:1px solid #c8cdd4;
+                    border-radius:8px; }
                         """)
 
     def _toggle_theme(self):
@@ -888,6 +931,7 @@ class OllamaGUI(QMainWindow):
     def _rag_has_data(self) -> bool:
         """Return True if a persisted RAG index exists on disk."""
         import os
+
         from rag_engine import _PERSIST
         meta = os.path.join(_PERSIST, "meta.json")
         idx  = os.path.join(_PERSIST, "index.faiss")
@@ -1151,7 +1195,7 @@ class OllamaGUI(QMainWindow):
         • ZIP                   → load as project session (tree only injected)
         """
         from attachment_handler import (
-            process_attachment, build_zip_tree, list_zip_entries,
+            process_attachment,
         )
 
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1200,7 +1244,7 @@ class OllamaGUI(QMainWindow):
         Load a zip as the active project session.
         Stores the tree; actual file contents fetched on demand.
         """
-        from attachment_handler import list_zip_entries, build_zip_tree
+        from attachment_handler import build_zip_tree, list_zip_entries
 
         entries = list_zip_entries(zip_path)
         if not entries:
@@ -1302,7 +1346,6 @@ class OllamaGUI(QMainWindow):
     #  SEND                                                              #
     # ================================================================ #
     def _send(self):
-        from attachment_handler import AttachmentResult
 
         prompt = self.input.toPlainText().strip()
         if not prompt:
@@ -1313,6 +1356,12 @@ class OllamaGUI(QMainWindow):
         # would then kill the new thread.
         if self.thread and self.thread.isRunning():
             self._log("⏳ Current reply still streaming — please wait.")
+            return
+
+        # Directory-first: never start a run without a valid working directory.
+        if not (self.agent_workdir and os.path.isdir(self.agent_workdir)):
+            self._log("⚠️ Pick a working directory first (📁 Open Dir).")
+            self._update_input_state()
             return
 
         self.last_prompt = prompt
@@ -1340,6 +1389,14 @@ class OllamaGUI(QMainWindow):
         self._update_stop_btn(True)
 
         # Build history
+        if self.agent_mode:
+            from workers import AgentWorker
+            self.thread = AgentWorker(prompt, self.agent_workdir, agent_name="build")
+            self.thread.event.connect(self._on_agent_event)
+            self.thread.done.connect(self._on_agent_finished)
+            self.thread.failed.connect(self._on_agent_failed)
+            self.thread.start()
+            return
         max_hist = 20 if self.crew_mode else 10
         with QMutexLocker(self.db_mutex):
             history = self.db.get_messages(self.current_conv_id)[-max_hist:]
@@ -1549,6 +1606,12 @@ class OllamaGUI(QMainWindow):
             except Exception: pass
             try: t.status.disconnect()
             except Exception: pass
+            try: t.event.disconnect()
+            except Exception: pass
+            try: t.done.disconnect()
+            except Exception: pass
+            try: t.failed.disconnect()
+            except Exception: pass
             # Signal the thread to stop, then wait up to 3 s before giving up
             t.stop()
             if not t.wait(3000):        # 3 second graceful timeout
@@ -1567,7 +1630,7 @@ class OllamaGUI(QMainWindow):
         if not os.path.isfile(_SETTINGS_FILE):
             return
         try:
-            with open(_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            with open(_SETTINGS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             if "dark" in data:
                 self.dark = bool(data["dark"])
@@ -1586,6 +1649,10 @@ class OllamaGUI(QMainWindow):
             # Restore persistent memory toggle
             if data.get("persistent_memory", False):
                 self._persistent_memory = True
+            # Restore working directory
+            workdir = data.get("workdir")
+            if isinstance(workdir, str) and os.path.isdir(workdir):
+                self.agent_workdir = os.path.abspath(workdir)
             # Restore Ollama host if present and valid
             host = data.get("ollama_host")
             if isinstance(host, str) and host.strip():
@@ -1603,6 +1670,11 @@ class OllamaGUI(QMainWindow):
                 }
         except Exception:
             pass  # corrupt file — keep defaults, will be overwritten on next save
+        # Settings can also be re-loaded at runtime (tests / /settings): keep the
+        # directory label and the directory-first input gating in sync.
+        if hasattr(self, "dir_label"):
+            self._update_dir_label()
+            self._update_input_state()
 
     def _restore_saved_model(self) -> None:
         """After populating model_box, select the last-used model if present."""
@@ -1642,6 +1714,7 @@ class OllamaGUI(QMainWindow):
             "persistent_memory": self._persistent_memory,
             "ollama_host": self.ollama_host,
             "base_urls": self.base_urls,
+            "workdir": self.agent_workdir if self.agent_workdir else None,
         }
         try:
             with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1780,7 +1853,7 @@ class OllamaGUI(QMainWindow):
         if ok:
             self.api_key = key
             self._save_settings()
-            self._log(f"✅ API key valid — saved and models reloaded.\n")
+            self._log("✅ API key valid — saved and models reloaded.\n")
             self._load_models()
         else:
             self._log(f"❌ Key error: {err}\n")
@@ -1806,22 +1879,13 @@ class OllamaGUI(QMainWindow):
         effective = running or self.api_mode
 
         # Right panel — chat
-        self.send_btn.setEnabled(effective)
         self.stop_btn.setEnabled(effective and bool(self.last_prompt))
-        self.input.setEnabled(effective)
         self.model_box.setEnabled(effective)
         self.mode_btn.setEnabled(effective)
         self.crew_btn.setEnabled(effective)
         self.attach_btn.setEnabled(effective)   # always enabled when server is up
-        if not effective:
-            self.input.setPlaceholderText(
-                "⏸ Ollama server stopped — press [Server: OFF] to start"
-            )
-        elif self.api_mode:
-            self.input.setPlaceholderText(
-                f"Type your message… ({self._provider_label()} — Ctrl+Enter to send)")
-        else:
-            self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
+        # input/send: server state AND the directory-first rule
+        self._update_input_state(effective)
 
         # Left panel — RAG
         # Embedding: Ollama models (contain ':') need local server.
@@ -1941,7 +2005,7 @@ class OllamaGUI(QMainWindow):
                         _t.sleep(0.5)
                         if not self._client.is_running():
                             break
-            except Exception as e:
+            except Exception:
                 pass
             # Update UI from main thread
             QTimer.singleShot(0, self._on_server_stopped)
@@ -2137,7 +2201,6 @@ class OllamaGUI(QMainWindow):
         if age_m:
             self.db.save_memory("age", age_m.group(1), self.current_conv_id)
 
-        from PyQt6.QtCore import QMetaObject
         QMetaObject.invokeMethod(
             self, "_refresh_mem_list", Qt.ConnectionType.QueuedConnection)
 
@@ -2336,6 +2399,117 @@ class OllamaGUI(QMainWindow):
             except ValueError:
                 pass
 
+    # ── Agent mode ──────────────────────────────────────────────────────
+    def _on_agent_event(self, kind, text):
+        """`text` grows the answer bubble; route/plan/tool/result/warn/status/
+        progress go to the status log (the collapsible think buffer is later)."""
+        if kind == "text":
+            self._append_token(text + "\n\n")
+            return
+        self._add_status(f"[{kind}] {text}")
+        if self._is_streaming:
+            self._render_chat()
+
+    def _on_agent_finished(self, result):
+        """Land the final answer in the bubble exactly once, then finish on the
+        same path as a normal reply (DB write, stop button, thread cleanup)."""
+        final = (result or "").strip()
+        idx = self._streaming_ai_idx
+        if final and 0 <= idx < len(self._chat_log):
+            already = self._chat_log[idx]['content']
+            # `text` events already end their block with a blank line — don't
+            # stack a second one in front of the final answer.
+            sep = "\n\n" if already.strip() and not already.endswith("\n\n") else ""
+            self._append_token(sep + final)
+        idx = self._streaming_ai_idx
+        content = (self._chat_log[idx]['content']
+                   if 0 <= idx < len(self._chat_log) else final)
+        self._on_done(content, 0, 0)
+
+    def _on_agent_failed(self, err):
+        """Agent run failed — same teardown as _on_error, without the modal."""
+        self._is_streaming = False
+        self._add_status(f"❌ Agent error: {err}")
+        self._render_chat()
+        self._update_stop_btn(False)
+        self._cleanup_thread()
+
+    def _toggle_agent_mode(self):
+        """ON/OFF toggle. An unavailable dev-assist bridge keeps it OFF and
+        reports why."""
+        if self.agent_mode:
+            self.agent_mode = False
+            self.agent_btn.setText("🤖 Agent: OFF")
+            self._add_status("🤖 Agent mode OFF")
+            return
+        try:
+            import agent_bridge
+        except Exception as exc:
+            self.agent_btn.setText("🤖 Agent: OFF")
+            self._add_status(f"⚠️ Agent unavailable: {exc}")
+            return
+        if not agent_bridge.is_available():
+            self.agent_btn.setText("🤖 Agent: OFF")
+            self._add_status(f"⚠️ Agent unavailable: {agent_bridge.get_error()}")
+            return
+        self.agent_mode = True
+        self.agent_btn.setText("🤖 Agent: ON")
+        self._add_status("🤖 Agent mode ON")
+
+    # ── Working directory (directory-first flow) ────────────────────────
+    def _select_workdir(self):
+        """Slot for the 📁 Open Dir button — pick and validate a directory."""
+        start = self.agent_workdir or os.getcwd()
+        path = QFileDialog.getExistingDirectory(self, "Select Working Directory", start)
+        if not path:
+            self._update_input_state()
+            return
+        path = os.path.abspath(path)
+        if not os.path.isdir(path):
+            self._add_status("⚠️ That directory does not exist")
+            self._update_input_state()
+            return
+        self.agent_workdir = path
+        self._update_dir_label()
+        self._save_settings()
+        self._update_input_state()
+        self._add_status(f"📁 Working directory: {path}")
+
+    def _maybe_select_workdir(self):
+        """Launch-time guard: with no valid saved directory, ask for one first."""
+        if self.agent_workdir and os.path.isdir(self.agent_workdir):
+            return
+        self._select_workdir()
+
+    def _update_dir_label(self):
+        if self.agent_workdir and os.path.isdir(self.agent_workdir):
+            self.dir_label.setText(f"📁 {self.agent_workdir}")
+            self.dir_label.setToolTip(self.agent_workdir)
+        else:
+            self.dir_label.setText("📁 No directory selected")
+            self.dir_label.setToolTip("Choose a working directory (📁 Open Dir)")
+
+    def _update_input_state(self, server_ok: bool | None = None):
+        """Directory-first gating: chat input and Send stay disabled until a
+        valid working directory exists (and the server/API mode allows chat)."""
+        if server_ok is None:
+            server_ok = bool(self._server_running) or bool(self.api_mode)
+        has_dir = bool(self.agent_workdir and os.path.isdir(self.agent_workdir))
+        enabled = has_dir and server_ok
+        self.input.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
+        if not has_dir:
+            self.input.setPlaceholderText(
+                "📁 Pick a working directory (📁 Open Dir) to chat…")
+        elif not server_ok:
+            self.input.setPlaceholderText(
+                "⏸ Ollama server stopped — press [Server: OFF] to start")
+        elif self.api_mode:
+            self.input.setPlaceholderText(
+                f"Type your message… ({self._provider_label()} — Ctrl+Enter to send)")
+        else:
+            self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
+
     def _clear_chat_display(self):
         """Clear visible chat while keeping conversation in DB."""
         self._chat_log = []
@@ -2350,7 +2524,6 @@ class OllamaGUI(QMainWindow):
             self._send()
         else:
             super().keyPressEvent(event)
-
 
 # ====================================================================
 if __name__ == "__main__":
