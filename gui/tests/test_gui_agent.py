@@ -1379,3 +1379,46 @@ def test_question_tool_roundtrip_with_gui_dialog(gui, tmp_path, monkeypatch):
     assert runner.wait(4000)
     assert '"Which approach?"="refactor"' in runner.out
     assert '"Any notes?"="custom answer"' in runner.out
+
+
+# ── 12. slash safety: /init /review /agents /help /themes never hang ────────
+def _slash_think_text(gui, cmd):
+    gui.input.setPlainText(cmd)
+    gui._send()
+    assert gui.input.toPlainText() == ""       # consumed, not a model run
+    outs = [m["text"] for m in gui._think if m["kind"] == "slash"]
+    return outs[-1] if outs else ""
+
+
+def test_slash_help_and_agents_dispatch_safely(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    out = _slash_think_text(gui, "/help")
+    assert "/init" in out and "/review" in out and "/agents" in out
+    assert gui.thread is None          # no agent worker / model call started
+
+    out = _slash_think_text(gui, "/agents")
+    assert "/build" in out and "/reviewer" in out
+    assert gui.thread is None
+
+
+def test_slash_themes_without_args_uses_print_only_path(gui, monkeypatch,
+                                                        tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    for cmd in ("/themes", "/theme"):
+        out = _slash_think_text(gui, cmd)   # would input() in the CLI
+        assert "Themes:" in out and "default" in out
+        assert gui.thread is None           # returned promptly, no hang
+
+
+def test_slash_init_and_review_blocked_with_clear_status(gui, monkeypatch,
+                                                         tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    for cmd in ("/init", "/review"):
+        gui.input.setPlainText(cmd)
+        gui._send()
+        assert gui.input.toPlainText() == ""
+        assert gui.thread is None       # blocking agent loop never started
+        assert [m for m in gui._think if m["kind"] == "slash"] == []
+        statuses = _status_texts(gui)
+        assert any(f"/{cmd[1:]}" in s and "⛔" in s for s in statuses), (
+            f"/{cmd[1:]} not blocked with a clear status: {statuses}")

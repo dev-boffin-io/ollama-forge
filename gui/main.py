@@ -2906,9 +2906,20 @@ class OllamaGUI(QMainWindow):
             self._start_audit(raw_args)
             return
 
-        # The CLI pickers (_cmd_model/_cmd_provider without args) call input()
-        # and would hang the GUI — send them down the print-only `list` path.
-        if not raw_args and name in ("model", "provider"):
+        # Template commands (/init, /review, /config, /skill, custom command
+        # files) run the FULL agent loop synchronously through run_task on this
+        # thread — that would freeze the GUI and its interactive prompts call
+        # input(). Block them explicitly; agent mode already provides the run.
+        if name in ("init", "review", "config", "skill"):
+            self._add_status(
+                f"⛔ /{name} would run a blocking agent loop on the GUI thread — "
+                f"type the task as a normal agent prompt instead.")
+            return
+
+        # The CLI pickers (_cmd_model/_cmd_provider/_cmd_theme(s) without args)
+        # call input() and would hang the GUI — send them down the print-only
+        # `list` path.
+        if not raw_args and name in ("model", "provider", "theme", "themes"):
             raw_args = "list"
 
         buf = io.StringIO()
