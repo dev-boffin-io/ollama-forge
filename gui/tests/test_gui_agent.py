@@ -5,6 +5,7 @@ Everything runs offscreen with a fake dev-assist bridge: no Ollama server, no
 network, no dialogs (the directory picker is stubbed per test).
 """
 
+import builtins
 import json
 import os
 import sys
@@ -1410,15 +1411,114 @@ def test_slash_themes_without_args_uses_print_only_path(gui, monkeypatch,
         assert gui.thread is None           # returned promptly, no hang
 
 
-def test_slash_init_and_review_blocked_with_clear_status(gui, monkeypatch,
-                                                         tmp_path):
+def _no_input(*a, **k):
+    raise RuntimeError("input() must never be called in the GUI")
+
+
+def _recording_run_agent(monkeypatch):
+    """Install a recording fake for agent_bridge.run_agent (the AgentWorker
+    entry point); returns the recorded call list.
+
+    Note: the approver must NOT be captured — it is bound to the AgentWorker
+    QThread, so holding a reference past cleanup aborts PyQt teardown."""
+    calls = []
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        calls.append({"task": task, "workdir": workdir, "agent": kw.get("agent")})
+        if on_event is not None:
+            on_event("route", "build · default")
+        return "template answer"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    return calls
+
+
+def test_slash_init_runs_agent_worker_with_rendered_template(gui, monkeypatch,
+                                                             tmp_path):
     _enable_agent(gui, monkeypatch, tmp_path)
-    for cmd in ("/init", "/review"):
-        gui.input.setPlainText(cmd)
-        gui._send()
-        assert gui.input.toPlainText() == ""
-        assert gui.thread is None       # blocking agent loop never started
-        assert [m for m in gui._think if m["kind"] == "slash"] == []
-        statuses = _status_texts(gui)
-        assert any(f"/{cmd[1:]}" in s and "⛔" in s for s in statuses), (
-            f"/{cmd[1:]} not blocked with a clear status: {statuses}")
+    monkeypatch.setattr(builtins, "input", _no_input)
+    calls = _recording_run_agent(monkeypatch)
+
+    gui.input.setPlainText("/init")
+    gui._send()
+    assert gui.input.toPlainText() == ""        # consumed, like a typed prompt
+    assert gui.thread is not None and gui.thread.isRunning()
+    assert _pump_until(lambda: gui.thread is None)
+
+    assert len(calls) == 1                      # exactly one agent run
+    task = calls[0]["task"]
+    assert "Create or update" in task and "AGENTS.md" in task
+    assert str(tmp_path / "proj") in task       # ${path} → the chosen workdir
+    assert calls[0]["agent"] in (None, "build")  # picked agent unless pinned
+
+    tpl = [m for m in gui._think if m["kind"] == "template"]
+    assert len(tpl) == 1 and "▶ /init (template)" in tpl[0]["text"]
+    bubbles = [m["content"] for m in gui._chat_log if m["type"] == "ai"]
+    assert any("template answer" in b for b in bubbles)
+
+
+def test_slash_review_with_args_substitutes_them(gui, monkeypatch, tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    monkeypatch.setattr(builtins, "input", _no_input)
+    calls = _recording_run_agent(monkeypatch)
+
+    gui.input.setPlainText("/review HEAD~1")
+    gui._send()
+    assert gui.thread is not None and gui.thread.isRunning()
+    assert _pump_until(lambda: gui.thread is None)
+
+    assert len(calls) == 1
+    task = calls[0]["task"]
+    assert "You are a code reviewer" in task    # real PROMPT_REVIEW text
+    assert "HEAD~1" in task                     # $ARGUMENTS substituted
+    tpl = [m for m in gui._think if m["kind"] == "template"]
+    assert len(tpl) == 1 and "▶ /review (template)" in tpl[0]["text"]
+    assert not any("▶ /review" in s for s in _status_texts(gui))
+
+
+def test_slash_init_write_flows_through_approval_dialog(gui, monkeypatch,
+                                                        tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    monkeypatch.setattr(builtins, "input", _no_input)
+    decisions = []
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        decisions.append(approver("write_file",
+                                  {"path": os.path.join(workdir, "AGENTS.md"),
+                                   "content": "placeholder"}))
+        return "wrote AGENTS.md"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    gui.input.setPlainText("/init")
+    gui._send()
+    assert _pump_until(lambda: gui._approval_dialog is not None)
+    gui._on_approval_decided(True, False, "")
+    assert _pump_until(lambda: gui.thread is None)
+    assert decisions == [True]                  # write approved through the dialog
+    bubbles = [m["content"] for m in gui._chat_log if m["type"] == "ai"]
+    assert any("wrote AGENTS.md" in b for b in bubbles)
+
+
+def test_slash_init_stop_works_and_never_calls_input(gui, monkeypatch,
+                                                     tmp_path):
+    _enable_agent(gui, monkeypatch, tmp_path)
+    monkeypatch.setattr(builtins, "input", _no_input)
+    asked = []
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        asked.append(approver("bash", {"command": "sleep 999"}))
+        return "gone"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    gui.input.setPlainText("/init")
+    gui._send()
+    assert gui.thread is not None and gui.thread.isRunning()
+    assert _pump_until(lambda: gui._approval_dialog is not None)
+    gui._stop_or_reload()                       # Stop button handler
+    assert _pump_until(lambda: gui.thread is None, timeout=5)
+    assert asked == [False]                     # stopped → approver denies cleanly
+    assert gui.input.toPlainText() == ""
+
+

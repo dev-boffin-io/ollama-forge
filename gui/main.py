@@ -2906,14 +2906,23 @@ class OllamaGUI(QMainWindow):
             self._start_audit(raw_args)
             return
 
-        # Template commands (/init, /review, /config, /skill, custom command
-        # files) run the FULL agent loop synchronously through run_task on this
-        # thread — that would freeze the GUI and its interactive prompts call
-        # input(). Block them explicitly; agent mode already provides the run.
-        if name in ("init", "review", "config", "skill"):
-            self._add_status(
-                f"⛔ /{name} would run a blocking agent loop on the GUI thread — "
-                f"type the task as a normal agent prompt instead.")
+        # Template commands (/init, /review, /config, /skill, plus any custom
+        # command files / skill files with a template) render their template
+        # and run through AgentWorker — never synchronously on the GUI thread
+        # like the CLI's run_task, which also calls input().
+        try:
+            from modules.slash_commands import (
+                _run_template,
+                list_commands,
+                render_template,
+            )
+            spec = list_commands(workdir).get(name)
+        except Exception as exc:
+            self._add_status(f"⚠️ Slash unavailable: {exc}")
+            return
+        if spec is not None and spec.template and spec.handler is _run_template:
+            rendered = render_template(spec.template, raw_args, workdir)
+            self._start_template_run(name or "?", rendered, spec.agent)
             return
 
         # The CLI pickers (_cmd_model/_cmd_provider/_cmd_theme(s) without args)
@@ -2979,6 +2988,40 @@ class OllamaGUI(QMainWindow):
             self._think.append({"kind": "slash", "text": shown})
             self._think_expanded = True
             self._render_chat()
+
+    def _start_template_run(self, name: str, prompt: str,
+                            agent: str | None) -> None:
+        """Run a rendered slash template as a normal AgentWorker run — same
+        approver / approval dialog / think buffer / undo as a typed prompt.
+        The picked agent applies unless the template pins one (spec.agent).
+        Never blocks the GUI thread and never calls input()."""
+        from workers import AgentWorker
+        agent_id = agent or (self.agent_box.currentData() or "build")
+        if not self.current_conv_id:
+            with QMutexLocker(self.db_mutex):
+                self.current_conv_id = self.db.create_conversation(f"/{name}")
+            self.chat_title_btn.setText(f"💬  /{name}")
+            self._refresh_conversations()
+        self._think = []
+        self._think_expanded = False
+        self._think.append({"kind": "template", "text": f"▶ /{name} (template)"})
+        self._agent_state = {"phase": "running", "agent": agent_id, "step": 0,
+                             "max_steps": 0, "tool": "", "note": ""}
+        self._update_agent_state()
+        self._start_ai_msg("🤖 AI")
+        self._update_stop_btn(True)
+        self._update_input_state()          # gated while the run is live
+        self.thread = AgentWorker(
+            prompt, self.agent_workdir, agent_name=agent_id,
+            auto_approve=self._agent_auto_approve,
+            always=self._agent_always,
+            extra_context=self._compaction_summary or "",
+        )
+        self.thread.event.connect(self._on_agent_event)
+        self.thread.done.connect(self._on_agent_finished)
+        self.thread.failed.connect(self._on_agent_failed)
+        self.thread.approval_requested.connect(self._on_approval_requested)
+        self.thread.start()
 
     # ── GUI-native session commands (backed by the GUI conversation DB) ──
     def _handle_gui_session_slash(self, name: str, raw_args: str) -> str:
