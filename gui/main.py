@@ -21,6 +21,7 @@ from PyQt6.QtCore import QMetaObject, QMutex, QMutexLocker, Qt, QTimer, QUrl, py
 from PyQt6.QtGui import QFont, QFontDatabase, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -137,6 +138,10 @@ class OllamaGUI(QMainWindow):
         # Declared before _load_settings() so a persisted directory survives.
         self.agent_mode    = False
         self.agent_workdir = None
+        self._agent_always: set = set()      # session-wide "Always" per tool
+        self._agent_auto_approve = False     # unsafe auto-approve toggle
+        self._approval_dialog = None
+        self._pending_tool = None
 
         self._load_settings()   # overwrite defaults with persisted values
         self._client = OllamaClient(host=self.ollama_host)  # re-point at saved host
@@ -459,6 +464,22 @@ class OllamaGUI(QMainWindow):
         self.dir_label.setMinimumHeight(60)
         self.dir_label.setToolTip("Current working directory")
         top.addWidget(self.dir_label)
+
+        self.auto_approve_chk = QCheckBox("☢ Auto-approve")
+        self.auto_approve_chk.setMinimumHeight(60)
+        self.auto_approve_chk.setChecked(False)
+        self.auto_approve_chk.setToolTip(
+            "UNSAFE — run every destructive agent tool without asking")
+        self.auto_approve_chk.toggled.connect(self._toggle_auto_approve)
+        top.addWidget(self.auto_approve_chk)
+
+        self.undo_btn = QPushButton("↩ Undo changes")
+        self.undo_btn.setMinimumHeight(60)
+        self.undo_btn.setMinimumWidth(180)
+        self.undo_btn.setToolTip("Revert the files the last agent run changed")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._on_undo_clicked)
+        top.addWidget(self.undo_btn)
         v.addLayout(top)
 
         # ── API key row (hidden until a key-needing provider is active) ─
@@ -1391,10 +1412,15 @@ class OllamaGUI(QMainWindow):
         # Build history
         if self.agent_mode:
             from workers import AgentWorker
-            self.thread = AgentWorker(prompt, self.agent_workdir, agent_name="build")
+            self.thread = AgentWorker(
+                prompt, self.agent_workdir, agent_name="build",
+                auto_approve=self._agent_auto_approve,
+                always=self._agent_always,
+            )
             self.thread.event.connect(self._on_agent_event)
             self.thread.done.connect(self._on_agent_finished)
             self.thread.failed.connect(self._on_agent_failed)
+            self.thread.approval_requested.connect(self._on_approval_requested)
             self.thread.start()
             return
         max_hist = 20 if self.crew_mode else 10
@@ -1612,8 +1638,17 @@ class OllamaGUI(QMainWindow):
             except Exception: pass
             try: t.failed.disconnect()
             except Exception: pass
+            try: t.approval_requested.disconnect()
+            except Exception: pass
             # Signal the thread to stop, then wait up to 3 s before giving up
             t.stop()
+            try:
+                if self._approval_dialog is not None:
+                    self._approval_dialog.close()
+            except Exception:
+                pass
+            self._approval_dialog = None
+            self._pending_tool = None
             if not t.wait(3000):        # 3 second graceful timeout
                 t.terminate()
                 t.wait(1000)
@@ -2427,6 +2462,7 @@ class OllamaGUI(QMainWindow):
         idx = self._streaming_ai_idx
         content = (self._chat_log[idx]['content']
                    if 0 <= idx < len(self._chat_log) else final).rstrip()
+        self._refresh_agent_changes()
         self._on_done(content, 0, 0)
 
     def _on_agent_failed(self, err):
@@ -2435,7 +2471,133 @@ class OllamaGUI(QMainWindow):
         self._add_status(f"❌ Agent error: {err}")
         self._render_chat()
         self._update_stop_btn(False)
+        self._refresh_agent_changes()
         self._cleanup_thread()
+
+    # ── Approval dialog (worker blocks on the UI's decision) ─────────────
+    def _on_approval_requested(self, name, args_json):
+        """Slot: a destructive tool wants approval. Show the non-blocking
+        dialog; the worker stays paused until provide_approval() is called."""
+        if not self.thread:
+            return
+        if self._agent_auto_approve:
+            self.thread.provide_approval(True)
+            return
+        try:
+            args = json.loads(args_json)
+        except Exception:
+            args = {}
+        if self._approval_dialog is not None:
+            self._approval_dialog.close()
+        try:
+            from approval_dialog import ApprovalDialog
+            dlg = ApprovalDialog(name, args, self.thread.workdir,
+                                 dark=self.dark, parent=self)
+        except Exception as exc:
+            self.thread.provide_approval(False, False, f"dialog error: {exc}")
+            return
+        dlg.decided.connect(self._on_approval_decided)
+        self._approval_dialog = dlg
+        self._pending_tool = name
+        self._add_status(f"🔐 Approval needed: {name}")
+        dlg.show()
+
+    def _on_approval_decided(self, approve, always, reason):
+        """Button pressed — hand the verdict back to the worker."""
+        self._approval_dialog = None
+        t = self.thread
+        if t is not None:
+            t.provide_approval(approve, always, reason)
+        tool = self._pending_tool or "tool"
+        self._pending_tool = None
+        if always:
+            self._add_status(f"🔐 Always allowed {tool}")
+        elif approve:
+            self._add_status(f"✅ Approved {tool}")
+        elif reason:
+            self._add_status(f"⛔ Denied {tool} — {reason}")
+        else:
+            self._add_status(f"⛔ Denied {tool}")
+
+    def _toggle_auto_approve(self, checked):
+        """Unsafe auto-approve toggle — OFF by default, confirmation required."""
+        if not checked:
+            self._agent_auto_approve = False
+            self.auto_approve_chk.setToolTip(
+                "UNSAFE — run every destructive agent tool without asking")
+            self._add_status("☢ Auto-approve OFF")
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        resp = QMessageBox.warning(
+            self, "Enable auto-approve?",
+            "Every destructive tool (write_file / edit_file / apply_patch / "
+            "bash) will run WITHOUT asking.\nYou can still use ↩ Undo changes "
+            "after the run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if resp != QMessageBox.StandardButton.Yes:
+            self.auto_approve_chk.blockSignals(True)
+            self.auto_approve_chk.setChecked(False)
+            self.auto_approve_chk.blockSignals(False)
+            self._agent_auto_approve = False
+            return
+        self._agent_auto_approve = True
+        self.auto_approve_chk.setToolTip(
+            "UNSAFE — destructive tools now run unattended")
+        self._add_status("☢ Auto-approve ON — destructive tools run unattended")
+
+    # ── Change tracker / undo ────────────────────────────────────────────
+    def _refresh_agent_changes(self):
+        """After a run: enable ↩ Undo changes iff the tracker has changes."""
+        try:
+            import agent_bridge
+            changed = bool(agent_bridge.has_changes())
+        except Exception:
+            changed = False
+        self.undo_btn.setEnabled(changed)
+        if changed:
+            try:
+                stat = agent_bridge.diffstat()
+            except Exception:
+                stat = ""
+            if stat:
+                self._add_status(f"📝 {stat}")
+
+    def _do_undo(self):
+        """Revert the last run's file changes (the tracker's own undo())."""
+        try:
+            import agent_bridge
+        except Exception as exc:
+            self._add_status(f"⚠️ Undo unavailable: {exc}")
+            return
+        if not agent_bridge.has_changes():
+            self._add_status("↩ Nothing to undo")
+            self.undo_btn.setEnabled(False)
+            return
+        restored = agent_bridge.undo_changes()
+        self._add_status(f"↩ Undone: {len(restored)} file(s) restored")
+        self.undo_btn.setEnabled(bool(agent_bridge.has_changes()))
+
+    def _on_undo_clicked(self):
+        """Slot for the ↩ Undo button — confirm, then call _do_undo()."""
+        try:
+            import agent_bridge
+        except Exception as exc:
+            self._add_status(f"⚠️ Undo unavailable: {exc}")
+            return
+        if not agent_bridge.has_changes():
+            self._do_undo()
+            return
+        listing = "\n".join(agent_bridge.touched_paths()[:20]) or "(unknown files)"
+        from PyQt6.QtWidgets import QMessageBox
+        resp = QMessageBox.question(
+            self, "Undo changes?",
+            f"Revert the changed file(s) from the last agent run?\n\n{listing}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        self._do_undo()
 
     def _toggle_agent_mode(self):
         """ON/OFF toggle. An unavailable dev-assist bridge keeps it OFF and

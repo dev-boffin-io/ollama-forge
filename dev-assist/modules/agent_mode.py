@@ -235,12 +235,46 @@ class Approver:
     """
 
     def __init__(self, workdir: str, *, auto_yes: bool = False,
-                 rules: dict | None = None) -> None:
+                 rules: dict | None = None, ask=None) -> None:
         self.workdir = workdir
         self.auto_yes = auto_yes
         self.rules = rules or {}
         self.always: set[str] = set()
         self.last_reason: str | None = None
+        # `ask` lets a different front-end (e.g. the Qt GUI) supply the
+        # approve/always/deny decision while keeping every other rule
+        # (permission rules, `always`, `last_reason`) identical to the CLI.
+        self._ask = ask or self._interactive_ask
+
+    def _interactive_ask(self, name: str, args: dict) -> dict:
+        """CLI prompt. Returns {"approve": bool, "always": bool, "reason": str|None}."""
+        if name == "edit_file":
+            _preview_edit(args, self.workdir)
+        elif name == "write_file":
+            _preview_write(args, self.workdir)
+        elif name == "apply_patch":
+            _preview_apply_patch(args, self.workdir)
+        elif name == "bash":
+            _print(f"  [yellow]run[/yellow] [bold]{args.get('command', '')}[/bold]")
+
+        try:
+            answer = input("  approve? [y]es / [n]o / [a]lways: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return {"approve": False, "always": False, "reason": None}
+
+        if answer in ("a", "always"):
+            return {"approve": True, "always": True, "reason": None}
+        if answer in ("", "y", "yes"):
+            return {"approve": True, "always": False, "reason": None}
+
+        # Declined — offer to say why, so the model can adapt instead of
+        # just retrying the same thing blindly.
+        try:
+            reason = input("  reason (optional, Enter to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            reason = ""
+        return {"approve": False, "always": False, "reason": reason or None}
 
     def __call__(self, name: str, args: dict) -> bool:
         self.last_reason = None
@@ -259,40 +293,19 @@ class Approver:
         if self.auto_yes or name in self.always:
             return True
 
-        if name == "edit_file":
-            _preview_edit(args, self.workdir)
-        elif name == "write_file":
-            _preview_write(args, self.workdir)
-        elif name == "apply_patch":
-            _preview_apply_patch(args, self.workdir)
-        elif name == "bash":
-            _print(f"  [yellow]run[/yellow] [bold]{args.get('command', '')}[/bold]")
-
-        try:
-            answer = input("  approve? [y]es / [n]o / [a]lways: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return False
-
-        if answer in ("a", "always"):
+        decision = self._ask(name, args) or {}
+        if decision.get("always"):
             self.always.add(name)
-            return True
-        if answer in ("", "y", "yes"):
+        if decision.get("approve"):
             return True
 
-        # Declined — offer to say why, so the model can adapt instead of
-        # just retrying the same thing blindly.
-        try:
-            reason = input("  reason (optional, Enter to skip): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            reason = ""
-        self.last_reason = reason or None
+        self.last_reason = decision.get("reason") or None
         return False
 
 
 def make_approver(workdir: str, *, auto_yes: bool = False,
-                  rules: dict | None = None) -> Approver:
-    return Approver(workdir, auto_yes=auto_yes, rules=rules)
+                  rules: dict | None = None, ask=None) -> Approver:
+    return Approver(workdir, auto_yes=auto_yes, rules=rules, ask=ask)
 
 
 def _load_permission_rules() -> dict:

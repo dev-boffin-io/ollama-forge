@@ -299,6 +299,9 @@ def test_agent_worker_emits_events_and_final_result(monkeypatch, qapp):
     )
 
     w = AgentWorker("do something", "/tmp", agent_name="build")
+    # the fake runs read-only + destructive probes; auto-deny any prompt so
+    # the destructive assertions below still hold (no real user present)
+    w.approval_requested.connect(lambda n, j: w.provide_approval(False))
     w.event.connect(lambda k, t: got_events.append((k, t)))
     w.done.connect(lambda s: got_done.append(s))
     w.failed.connect(lambda e: got_failed.append(e))
@@ -516,3 +519,212 @@ def test_agent_off_uses_the_normal_chat_worker(gui, monkeypatch, tmp_path):
     assert isinstance(gui._chat_log[-1], dict)
     assert _ai_contents(gui) == ["plain reply"]
     assert gui.agent_mode is False
+
+
+# ── 6. approvals + undo ───────────────────────────────────────────────────────
+def _deny_prompt(approvals):
+    return lambda name, args: (approvals.append(name) or
+                               {"approve": False, "reason": "too risky"})
+
+
+def test_approver_prompts_for_destructive_but_not_readonly(monkeypatch):
+    asked = []
+    approver = agent_bridge.make_approver(
+        "/tmp", lambda n, a: asked.append(n) or {"approve": True})
+    assert approver("read_file", {"path": "x"}) is True      # no prompt
+    assert approver("write_file", {"path": "x", "content": "y"}) is True
+    assert asked == ["write_file"]
+
+
+def test_approver_deny_sets_last_reason():
+    approver = agent_bridge.make_approver(
+        "/tmp", _deny_prompt([]))
+    assert approver("edit_file", {"path": "x"}) is False
+    assert approver.last_reason == "too risky"
+    assert approver("read_file", {"path": "x"}) is True      # last_reason reset
+    assert approver.last_reason is None
+
+
+def test_approver_always_skips_the_second_prompt():
+    asked = []
+
+    def ask(name, args):
+        asked.append(name)
+        return {"approve": True, "always": True}
+
+    approver = agent_bridge.make_approver("/tmp", ask)
+    assert approver("bash", {"command": "rm -rf /"}) is True    # first: prompt
+    assert approver("bash", {"command": "rm -rf /"}) is True    # always: no prompt
+    assert asked == ["bash"]                                    # only once
+
+
+def test_approver_rule_deny_never_prompts():
+    asked = []
+    approver = agent_bridge.make_approver("/tmp", _deny_prompt(asked),
+                                          rules={"bash": "deny"})
+    assert approver("bash", {"command": "git reset --hard"}) is False
+    assert asked == []
+    assert approver.last_reason == \
+        "bash is blocked by your permission rules"
+
+
+def test_worker_blocks_on_approval_and_unblocks(monkeypatch, qapp):
+    from workers import AgentWorker
+
+    decisions = []
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        decisions.append(approver("write_file",
+                                  {"path": "n.txt", "content": "hi"}))
+        return "approved run done"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    got_done, got_failed, approvals = [], [], []
+    w = AgentWorker("task", "/tmp")
+    w.approval_requested.connect(
+        lambda n, j: approvals.append((n, json.loads(j)))
+        or w.provide_approval(True))
+    w.done.connect(got_done.append)
+    w.failed.connect(got_failed.append)
+    w.start()
+
+    assert _pump_until(lambda: bool(got_done or got_failed))
+    w.wait(3000)
+    assert approvals == [("write_file", {"path": "n.txt", "content": "hi"})]
+    assert decisions == [True]
+    assert got_failed == []
+    assert got_done == ["approved run done"]
+
+
+def test_worker_rule_deny_never_emits_approval(monkeypatch, qapp):
+    from workers import AgentWorker
+
+    decisions, approvals = [], []
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        decisions.append(approver("bash", {"command": "rm -rf /"}))
+        return "denied cleanly"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    got_done = []
+    w = AgentWorker("task", "/tmp", rules={"bash": "deny"})
+    w.approval_requested.connect(
+        lambda n, j: approvals.append(n) or w.provide_approval(True))
+    w.done.connect(got_done.append)
+    w.start()
+
+    assert _pump_until(lambda: got_done)
+    w.wait(3000)
+    assert decisions == [False]
+    assert approvals == []           # blocked by rules → no dialog
+    assert got_done == ["denied cleanly"]
+
+
+def test_stop_unblocks_a_pending_approval(monkeypatch, qapp):
+    from workers import AgentWorker
+
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None, **kw):
+        approver("bash", {"command": "sleep 999"})
+        return "should not surface"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+
+    got_done, approvals = [], []
+    w = AgentWorker("task", "/tmp")
+    w.approval_requested.connect(lambda n, j: approvals.append(n))
+    w.done.connect(got_done.append)
+    w.start()
+
+    assert _pump_until(lambda: bool(approvals)), "approval was never requested"
+    w.stop()                                     # Stop while worker is blocked
+    assert _pump_until(lambda: w.isFinished(), timeout=5)
+    # clean exit: no result emitted, no hang, no exception
+    assert w.wait(3000)
+    assert got_done == []
+
+
+def test_undo_restores_changed_files(tmp_path):
+    from core import change_tracker
+    p = tmp_path / "notes.txt"
+    p.write_text("one", encoding="utf-8")
+
+    change_tracker.new_run()
+    t = change_tracker.get_tracker()
+    t.snapshot(str(p))
+    p.write_text("two", encoding="utf-8")
+    t.record(str(p), "two")          # the real write_file/edit_file path
+    assert p.read_text() == "two"
+
+    restored = agent_bridge.undo_changes()
+    assert restored == [str(p)]
+    assert p.read_text() == "one"
+
+
+def test_undo_button_state_and_do_undo(gui, monkeypatch):
+    calls = []
+    monkeypatch.setattr(agent_bridge, "has_changes", lambda: True)
+    monkeypatch.setattr(agent_bridge, "diffstat",
+                        lambda: "notes.txt | 1 +, 1 -")
+    monkeypatch.setattr(agent_bridge, "undo_changes",
+                        lambda: (calls.append(1) or ["/tmp/notes.txt"]))
+
+    gui._refresh_agent_changes()
+    assert gui.undo_btn.isEnabled() is True
+    assert any("📝" in s and "notes.txt" in s for s in _status_texts(gui))
+
+    gui._do_undo()
+    assert calls == [1]
+    assert any("Undone: 1 file(s) restored" in s for s in _status_texts(gui))
+
+
+def test_auto_approve_stays_off_unless_confirmed(gui, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    assert gui.auto_approve_chk.isChecked() is False
+
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: QMessageBox.StandardButton.No)
+    gui.auto_approve_chk.setChecked(True)
+    assert gui.auto_approve_chk.isChecked() is False    # declined → back off
+    assert gui._agent_auto_approve is False
+
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    gui.auto_approve_chk.setChecked(True)
+    assert gui.auto_approve_chk.isChecked() is True
+    assert gui._agent_auto_approve is True
+    assert any("Auto-approve ON" in s for s in _status_texts(gui))
+
+
+class _FakeApprovalThread:
+    def __init__(self, workdir="/tmp"):
+        self.workdir = workdir
+        self.answers = []
+
+    def provide_approval(self, approve, always=False, reason=""):
+        self.answers.append((approve, always, reason))
+
+
+def test_window_shows_dialog_and_hands_decision_to_worker(tmp_path, monkeypatch):
+    win = _build_gui(tmp_path, monkeypatch)
+    try:
+        fake = _FakeApprovalThread(str(tmp_path / "proj"))
+        win.thread = fake
+
+        win._on_approval_requested("write_file",
+            json.dumps({"path": "a.txt", "content": "line\n"}))
+        assert win._approval_dialog is not None
+        assert win._approval_dialog.windowTitle().startswith("Approve: write_file")
+        assert any("Approval needed: write_file" in s for s in _status_texts(win))
+
+        win._approval_dialog._deny()
+        assert fake.answers == [(False, False, "")]
+        assert win._approval_dialog is None
+        assert any("Denied write_file" in s for s in _status_texts(win))
+        assert win._pending_tool is None
+    finally:
+        win.thread = None
+        win.close()
+        win.deleteLater()
+        _qapp().processEvents()

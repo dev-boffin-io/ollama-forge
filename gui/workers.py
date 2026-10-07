@@ -4,6 +4,8 @@ workers.py — QThread workers (PyQt6).
 DirectChat, CrewChat, RAGBuild, GroqChat, SmartChat, CodeRun.
 All heavy work off the GUI thread.
 """
+import json
+import threading
 import time
 
 from PyQt6.QtCore import QMutex, QMutexLocker, QThread, pyqtSignal
@@ -483,12 +485,14 @@ class CodeRunWorker(_StopMixin, QThread):
 
 # ── Dev-assist agent worker ───────────────────────────────────────────────────
 class AgentWorker(_StopMixin, QThread):
-    event  = pyqtSignal(str, str)   # kind, text
-    done   = pyqtSignal(str)        # final answer — NOT QThread.finished
-    failed = pyqtSignal(str)
+    event              = pyqtSignal(str, str)   # kind, text
+    done               = pyqtSignal(str)        # final answer — NOT QThread.finished
+    failed             = pyqtSignal(str)
+    approval_requested = pyqtSignal(str, str)   # tool name, args json
 
     def __init__(self, task: str, workdir: str, agent_name: str = "build",
-                 max_steps: int = 24, extra_context: str = ""):
+                 max_steps: int = 24, extra_context: str = "",
+                 *, auto_approve: bool = False, always=None, rules=None):
         QThread.__init__(self)
         _StopMixin.__init__(self)
         self.task = task
@@ -496,24 +500,49 @@ class AgentWorker(_StopMixin, QThread):
         self.agent_name = agent_name
         self.max_steps = max_steps
         self.extra_context = extra_context
+        self.auto_approve = auto_approve
+        self.always = always if always is not None else set()
+        self.rules = rules or {}
+        self.last_reason = None
         self._result = ""
+        self._approval_lock = threading.Lock()
+        self._approval_event = threading.Event()
+        self._approval_result = None
+
+    # Called from the UI thread while the worker blocks in the approver.
+    def provide_approval(self, approve: bool, always: bool = False,
+                         reason: str = "") -> None:
+        with self._approval_lock:
+            self._approval_result = {
+                "approve": bool(approve),
+                "always": bool(always),
+                "reason": reason or None,
+            }
+            self._approval_event.set()
+
+    def _ask(self, name: str, args: dict) -> dict:
+        """Runs in the worker thread: emit the request, block until answered/stopped."""
+        if not self.is_running():
+            return {"approve": False, "reason": "stopped"}
+        with self._approval_lock:
+            self._approval_result = None
+            self._approval_event.clear()
+        self.approval_requested.emit(name, json.dumps(args, default=str))
+        while not self._approval_event.wait(0.1):
+            if not self.is_running():
+                return {"approve": False, "reason": "stopped"}
+        with self._approval_lock:
+            return self._approval_result or {"approve": False, "reason": None}
 
     def run(self):
         try:
-            from agent_bridge import run_agent
+            from agent_bridge import load_permission_rules, make_approver, run_agent
 
-            # Same destructive-tool list the agent loop itself gates on —
-            # never a hand-written copy.
-            try:
-                from core.tools import DESTRUCTIVE_TOOLS
-
-                def is_destructive(name: str) -> bool:
-                    return name in DESTRUCTIVE_TOOLS
-            except Exception:
-                from core.permissions import is_destructive
-
-            def approver(name, args):
-                return not is_destructive(name)
+            rules = self.rules or load_permission_rules()
+            approver = make_approver(
+                self.workdir, self._ask,
+                auto_yes=self.auto_approve, rules=rules, always=self.always,
+            )
 
             def on_event(kind, text):
                 if not self.is_running():
@@ -529,6 +558,7 @@ class AgentWorker(_StopMixin, QThread):
                 agent=self.agent_name,
                 extra_context=self.extra_context,
             )
+            self.last_reason = getattr(approver, "last_reason", None)
         except Exception as e:
             if self.is_running():
                 self.failed.emit(str(e))
