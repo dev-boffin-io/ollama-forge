@@ -304,6 +304,20 @@ def _css(dark: bool) -> str:
         p.sp { margin: 4px 0; height: 4px; }
         b, strong { color: #f0f0f0; }
         s { color: #888; }
+        /* think buffer */
+        .tb {
+            margin: 6px 0; border: 1px solid #2f2f2f; border-radius: 6px;
+            background: #171717; overflow: hidden;
+        }
+        .tb-h { padding: 6px 12px; font-size: 27px; }
+        .tb-h a { color: #a8c0e0; text-decoration: none; }
+        .tb-b { padding: 8px 12px; font-family: 'Courier New', monospace;
+                font-size: 22px; line-height: 1.6; color: #9aa0a6;
+                max-height: 340px; overflow: hidden; }
+        .tb-item { margin: 2px 0; white-space: pre-wrap; }
+        .tb-k { color: #79b8ff; }
+        .tb-more { margin-top: 6px; font-size: 24px; }
+        .tb-more a { color: #58a6ff; text-decoration: none; }
         """
     else:
         return """
@@ -377,19 +391,82 @@ def _css(dark: bool) -> str:
         p  { margin: 4px 0; }
         p.sp { margin: 4px 0; height: 4px; }
         s { color: #888; }
+        /* think buffer */
+        .tb {
+            margin: 6px 0; border: 1px solid #d0d7de; border-radius: 6px;
+            background: #f6f8fa; overflow: hidden;
+        }
+        .tb-h { padding: 6px 12px; font-size: 27px; }
+        .tb-h a { color: #57606a; text-decoration: none; }
+        .tb-b { padding: 8px 12px; font-family: 'Courier New', monospace;
+                font-size: 22px; line-height: 1.6; color: #57606a;
+                max-height: 340px; overflow: hidden; }
+        .tb-item { margin: 2px 0; white-space: pre-wrap; }
+        .tb-k { color: #0550ae; }
+        .tb-more { margin-top: 6px; font-size: 24px; }
+        .tb-more a { color: #0550ae; text-decoration: none; }
         """
+
+
+# ------------------------------------------------------------------ #
+#  Think buffer                                                        #
+# ------------------------------------------------------------------ #
+def think_html(items: list[dict], *, expanded: bool = False,
+               limit: int = 6) -> str:
+    """Render the collapsible agent-reasoning buffer.
+
+    items: [{"kind": ..., "text": ...}] — the real agent events, display only
+    (never persisted). Collapsed by default: only the latest `limit` events
+    show, with a "show all" anchor; the whole buffer toggles via think-toggle.
+    """
+    if not items:
+        return ""
+    total = len(items)
+    shown = items if expanded else items[-limit:]
+    truncated = (not expanded) and total > limit
+
+    rows = []
+    for item in shown:
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        kind = str(item.get("kind", ""))
+        tag = f'<span class="tb-k">[{_html.escape(kind)}]</span> ' if kind else ""
+        rows.append(f'<div class="tb-item">{tag}{_html.escape(text)}</div>')
+
+    head = (
+        f'<div class="tb-h"><a href="think-toggle">'
+        f'{"▼" if expanded else "▶"} 🧠 Agent reasoning · {total} '
+        f'event{"s" if total != 1 else ""}</a></div>'
+    )
+    body = '<div class="tb-b">' + "".join(rows)
+    if truncated:
+        body += (
+            f'<div class="tb-more"><a href="think-more">… '
+            f'{total - limit} earlier event{"s" if total - limit != 1 else ""}'
+            f' — show all</a></div>'
+        )
+    body += '</div>'
+    return f'<div class="tb">{head}{body}</div>'
 
 
 # ------------------------------------------------------------------ #
 #  Full chat HTML builder                                              #
 # ------------------------------------------------------------------ #
-def chat_html(messages: list[dict], code_store: list[str], dark: bool = True) -> str:
+def chat_html(messages: list[dict], code_store: list[str], dark: bool = True,
+              *, think=None, think_expanded: bool = False) -> str:
     """
     Build a full HTML document from a list of chat messages.
     Each message:  {type: 'user'|'ai'|'status', content: str, label?: str}
+    Optional `think` renders the collapsible agent-reasoning buffer first.
     """
     code_store.clear()
     parts = [f'<html><head><meta charset="utf-8"><style>{_css(dark)}</style></head><body>']
+
+    if think:
+        tb = think_html(think, expanded=think_expanded)
+        if tb:
+            parts.append(tb)
 
     for msg in messages:
         t       = msg.get('type', 'status')

@@ -383,12 +383,13 @@ def test_agent_text_and_answer_share_the_bubble(gui, monkeypatch, tmp_path):
     assert answer == "Hello from the agent"  # appears exactly once
     assert answer.count("Hello from the agent") == 1
 
-    # everything else is a status line
-    statuses = " | ".join(_status_texts(gui))
-    for marker in ("[route]", "[plan]", "[progress]", "[tool]", "[result]",
-                   "[status]"):
-        assert marker in statuses, marker
-    assert "Hello from the agent" not in statuses
+    # every other agent event lives in the collapsible think buffer
+    think = " | ".join(m["text"] for m in gui._think)
+    kinds = [m["kind"] for m in gui._think]
+    for kind in ("route", "plan", "progress", "tool", "result", "status"):
+        assert kind in kinds, kind
+    assert "Hello from the agent" not in think
+    assert not any("Hello from the agent" in s for s in _status_texts(gui))
 
     # persisted like any other reply — assistant content is the answer
     rows = gui.db.get_messages(gui.current_conv_id)
@@ -728,3 +729,129 @@ def test_window_shows_dialog_and_hands_decision_to_worker(tmp_path, monkeypatch)
         win.close()
         win.deleteLater()
         _qapp().processEvents()
+
+
+# ── 7. think buffer + live agent state ────────────────────────────────────────
+def _run_fake_agent(gui, monkeypatch, tmp_path, events, result="done"):
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+
+    def fake_run_agent(task, *, workdir, on_event=None, **kw):
+        for kind, text in events:
+            on_event(kind, text)
+        return result
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    if not gui.agent_mode:
+        gui._toggle_agent_mode()
+    gui.input.setPlainText("go")
+    gui._send()
+
+
+def test_think_buffer_holds_only_real_agent_events(gui, monkeypatch, tmp_path):
+    _run_fake_agent(gui, monkeypatch, tmp_path, [
+        ("route", "build · default"),
+        ("plan", "📋 Plan:\n  do it"),
+        ("progress", "▶ Sub-task 1/7: build"),
+        ("tool", "edit_file(path=a.py)"),
+        ("result", "ok"),
+        ("text", "final"),                    # goes to the bubble, NOT think
+    ])
+    assert _pump_until(lambda: gui.thread is None)
+
+    kinds = [m["kind"] for m in gui._think]
+    assert kinds == ["route", "plan", "progress", "tool", "result"]
+    assert "final" not in " | ".join(m["text"] for m in gui._think)
+    # not persisted: the think buffer is display-only
+    rows = gui.db.get_messages(gui.current_conv_id)
+    assert not any("[route]" in r["content"] or "Sub-task 1/7" in r["content"]
+                   for r in rows)
+
+
+def test_think_buffer_collapse_and_expand_toggle_anchor(gui, monkeypatch,
+                                                        tmp_path):
+    from PyQt6.QtCore import QUrl
+    events = [("tool", f"read_file(path={i}.py)") for i in range(20)]
+    _run_fake_agent(gui, monkeypatch, tmp_path, events)
+    assert _pump_until(lambda: gui.thread is None)
+
+    assert len(gui._think) == 20
+    assert gui._think_expanded is False
+    html = gui.chat.toHtml()
+    assert "Agent reasoning · 20 events" in html
+    assert "show all" in html                       # truncation marker present
+
+    gui._on_anchor_clicked(QUrl("think-toggle"))    # expand
+    assert gui._think_expanded is True
+    html_open = gui.chat.toHtml()
+    assert "show all" not in html_open
+    for i in (0, 19):
+        assert f"read_file(path={i}.py)" in gui.chat.toPlainText()
+
+    gui._on_anchor_clicked(QUrl("think-toggle"))    # collapse again
+    assert gui._think_expanded is False
+
+
+def test_think_more_expands_the_buffer(gui, monkeypatch, tmp_path):
+    from PyQt6.QtCore import QUrl
+    events = [("tool", f"read_file(path={i}.py)") for i in range(12)]
+    _run_fake_agent(gui, monkeypatch, tmp_path, events)
+    assert _pump_until(lambda: gui.thread is None)
+
+    assert gui._think_expanded is False
+    gui._on_anchor_clicked(QUrl("think-more"))
+    assert gui._think_expanded is True
+    assert "read_file(path=0.py)" in gui.chat.toPlainText()  # oldest shown
+
+
+def test_agent_state_strip_reflects_real_events(gui, monkeypatch, tmp_path):
+    assert gui.agent_state_label.text() == "🤖 · Agent · idle"
+
+    _run_fake_agent(gui, monkeypatch, tmp_path, [
+        ("route", "code · research"),
+        ("progress", "▶ Sub-task 2/5: research"),
+        ("tool", "read_file(path=a.py)"),
+        ("warn", "rate limit hit"),
+    ])
+    assert _pump_until(lambda: gui.thread is None)
+
+    label = gui.agent_state_label.text()
+    assert "code · research" in label      # from the real route event
+    assert "2/5" in label                  # real step count from progress event
+    assert "rate limit hit" in label       # real warning text
+    assert "done" in label                 # real completion phase
+    assert gui._agent_state["step"] == 2
+    assert gui._agent_state["max_steps"] == 5
+    assert gui._agent_state["note"] == "rate limit hit"
+
+
+def test_agent_state_idle_when_toggled_off(gui):
+    gui._toggle_agent_mode()          # ON does not fake any state
+    gui._agent_state = {"phase": "working", "agent": "build", "step": 3,
+                        "max_steps": 5, "tool": "edit_file", "note": ""}
+    gui._update_agent_state()
+    assert "working" in gui.agent_state_label.text()
+
+    gui._toggle_agent_mode()          # OFF resets the strip to a real idle
+    assert gui.agent_state_label.text() == "🤖 · Agent · idle"
+    assert gui._agent_state["phase"] == "idle"
+
+
+def test_think_buffer_cleared_on_new_run_and_clear(gui, monkeypatch, tmp_path):
+    _run_fake_agent(gui, monkeypatch, tmp_path,
+                    [("tool", "read_file(path=a.py)")])
+    assert _pump_until(lambda: gui.thread is None)
+    assert len(gui._think) == 1
+
+    _run_fake_agent(gui, monkeypatch, tmp_path,
+                    [("progress", "▶ Sub-task 1/2: x")])
+    assert _pump_until(lambda: gui.thread is None)
+    assert len(gui._think) == 1           # fresh buffer each run
+
+    gui._clear_chat_display()
+    assert gui._think == []
+    assert gui._think_expanded is False
+    assert "Agent reasoning" not in gui.chat.toHtml()

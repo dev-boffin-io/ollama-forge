@@ -13,6 +13,7 @@ import copy
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -142,6 +143,10 @@ class OllamaGUI(QMainWindow):
         self._agent_auto_approve = False     # unsafe auto-approve toggle
         self._approval_dialog = None
         self._pending_tool = None
+        self._think: list = []               # collapsible agent-reasoning buffer
+        self._think_expanded = False
+        self._agent_state = {"phase": "idle", "agent": "", "step": 0,
+                             "max_steps": 0, "tool": "", "note": ""}
 
         self._load_settings()   # overwrite defaults with persisted values
         self._client = OllamaClient(host=self.ollama_host)  # re-point at saved host
@@ -480,6 +485,14 @@ class OllamaGUI(QMainWindow):
         self.undo_btn.setEnabled(False)
         self.undo_btn.clicked.connect(self._on_undo_clicked)
         top.addWidget(self.undo_btn)
+
+        self.agent_state_label = QLabel()
+        self.agent_state_label.setMinimumHeight(60)
+        self.agent_state_label.setObjectName("agentState")
+        self.agent_state_label.setToolTip(
+            "Live agent state — fed only by real agent events")
+        self._update_agent_state()
+        top.addWidget(self.agent_state_label)
         v.addLayout(top)
 
         # ── API key row (hidden until a key-needing provider is active) ─
@@ -1421,6 +1434,11 @@ class OllamaGUI(QMainWindow):
             self.thread.done.connect(self._on_agent_finished)
             self.thread.failed.connect(self._on_agent_failed)
             self.thread.approval_requested.connect(self._on_approval_requested)
+            self._think = []
+            self._think_expanded = False
+            self._agent_state = {"phase": "running", "agent": "build", "step": 0,
+                                 "max_steps": 0, "tool": "", "note": ""}
+            self._update_agent_state()
             self.thread.start()
             return
         max_hist = 20 if self.crew_mode else 10
@@ -2411,7 +2429,8 @@ class OllamaGUI(QMainWindow):
     def _render_chat(self):
         """Full HTML re-render of the entire chat log."""
         self._code_store = []
-        html = chat_html(self._chat_log, self._code_store, self.dark)
+        html = chat_html(self._chat_log, self._code_store, self.dark,
+                         think=self._think, think_expanded=self._think_expanded)
         sb = self.chat.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 40
         self.chat.setHtml(html)
@@ -2421,7 +2440,7 @@ class OllamaGUI(QMainWindow):
             )
 
     def _on_anchor_clicked(self, url: QUrl):
-        """Handle copy:N and run:N anchor clicks from code block buttons."""
+        """Handle copy:N anchors and the collapsible think-buffer toggles."""
         s = url.toString()
 
         if s.startswith('copy:'):
@@ -2434,14 +2453,57 @@ class OllamaGUI(QMainWindow):
             except ValueError:
                 pass
 
+        if s == 'think-toggle':
+            self._think_expanded = not self._think_expanded
+            self._render_chat()
+        elif s == 'think-more':
+            self._think_expanded = True
+            self._render_chat()
+
     # ── Agent mode ──────────────────────────────────────────────────────
+    def _update_agent_state(self):
+        """Rewrite the live "Agent state" strip from real agent events only."""
+        st = self._agent_state
+        bits = ["🤖", "Agent"]
+        if st.get("agent"):
+            bits.append(st["agent"])
+        bits.append(st.get("phase") or "idle")
+        if st.get("step") and st.get("max_steps"):
+            bits.append(f"step {st['step']}/{st['max_steps']}")
+        if st.get("tool"):
+            bits.append(st["tool"])
+        elif st.get("note"):
+            bits.append(st["note"])
+        self.agent_state_label.setText(" · ".join(bits))
+
     def _on_agent_event(self, kind, text):
-        """`text` grows the answer bubble; route/plan/tool/result/warn/status/
-        progress go to the status log (the collapsible think buffer is later)."""
+        """`text` grows the answer bubble; every other real agent event feeds
+        the collapsible think buffer + the live state strip (never guesses)."""
         if kind == "text":
             self._append_token(text + "\n\n")
             return
-        self._add_status(f"[{kind}] {text}")
+        self._think.append({"kind": kind, "text": text})
+        st = self._agent_state
+        if kind == "route":
+            st["agent"] = text.strip()
+        elif kind == "progress":
+            m = re.match(r".*?(\d+)\s*/\s*(\d+)", text)
+            if m:
+                st["step"], st["max_steps"] = int(m.group(1)), int(m.group(2))
+            st["phase"] = "working"
+            st["tool"], st["note"] = "", ""
+        elif kind == "tool":
+            st["tool"] = text.strip()[:40]
+            st["note"] = ""
+        elif kind == "result":
+            st["note"] = text.strip().splitlines()[0][:40]
+        elif kind == "plan":
+            st["phase"] = "planning"
+        elif kind == "warn":
+            st["phase"] = "warned"
+            st["tool"] = ""
+            st["note"] = text.strip()[:40]
+        self._update_agent_state()
         if self._is_streaming:
             self._render_chat()
 
@@ -2463,12 +2525,17 @@ class OllamaGUI(QMainWindow):
         content = (self._chat_log[idx]['content']
                    if 0 <= idx < len(self._chat_log) else final).rstrip()
         self._refresh_agent_changes()
+        self._agent_state["phase"] = "done"
+        self._update_agent_state()
         self._on_done(content, 0, 0)
 
     def _on_agent_failed(self, err):
         """Agent run failed — same teardown as _on_error, without the modal."""
         self._is_streaming = False
         self._add_status(f"❌ Agent error: {err}")
+        self._agent_state["phase"] = "error"
+        self._agent_state["note"] = str(err)[:40]
+        self._update_agent_state()
         self._render_chat()
         self._update_stop_btn(False)
         self._refresh_agent_changes()
@@ -2605,6 +2672,9 @@ class OllamaGUI(QMainWindow):
         if self.agent_mode:
             self.agent_mode = False
             self.agent_btn.setText("🤖 Agent: OFF")
+            self._agent_state = {"phase": "idle", "agent": "", "step": 0,
+                                 "max_steps": 0, "tool": "", "note": ""}
+            self._update_agent_state()
             self._add_status("🤖 Agent mode OFF")
             return
         try:
@@ -2679,6 +2749,8 @@ class OllamaGUI(QMainWindow):
         """Clear visible chat while keeping conversation in DB."""
         self._chat_log = []
         self._code_store = []
+        self._think = []
+        self._think_expanded = False
         self._is_streaming = False
         self.chat.clear()
 
