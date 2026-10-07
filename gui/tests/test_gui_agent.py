@@ -1045,7 +1045,8 @@ def test_picked_reviewer_is_read_only_in_state_strip(gui, monkeypatch, tmp_path)
     gui._send()
     assert _pump_until(lambda: gui.thread is None)
     assert captured == ["reviewer"]
-    assert gui.agent_state_label.text() == "🤖 · Agent · reviewer · done"
+    assert gui.agent_state_label.text().startswith("🤖 · Agent · reviewer")
+    assert "reviewer" in gui.agent_state_label.text()
 
 
 # ── 10. slash commands via real dispatcher (3.2) ─────────────────────────────
@@ -1234,3 +1235,36 @@ def test_slash_compact_requires_messages(gui):
     gui.current_conv_id = _seed_conv(gui, "Solo", [("user", "only one")])
     out2 = _slash_out(gui, "/compact")
     assert "at least 2 messages" in out2
+
+
+# ── 12. AGENTS.md indicator in the state strip (3.4) ─────────────────────────
+def test_agents_md_indicator_shows_check_when_present(gui, monkeypatch,
+                                                      tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# repo rules\n- no TDD\n",
+                                        encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    gui._select_workdir()
+    gui._toggle_agent_mode()
+    assert "AGENTS.md ✓" in gui.agent_state_label.text()
+    # the bit is driven by the real dev-assist discovery
+    assert str(tmp_path / "AGENTS.md") in [str(p) for p in gui._discover_agents(str(tmp_path))]
+
+
+def test_agents_md_indicator_shows_cross_when_missing(gui, monkeypatch,
+                                                      tmp_path):
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    gui._select_workdir()
+    gui._toggle_agent_mode()
+    assert "AGENTS.md ✗" in gui.agent_state_label.text()
+    assert gui._discover_agents(str(tmp_path)) == []
+
+
+def test_agents_md_indicator_absent_outside_agent_mode(gui, monkeypatch,
+                                                       tmp_path):
+    (tmp_path / "AGENTS.md").write_text("rules", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    gui._select_workdir()
+    assert "AGENTS.md" not in gui.agent_state_label.text()

@@ -2506,7 +2506,9 @@ class OllamaGUI(QMainWindow):
         """Rewrite the live "Agent state" strip from real agent events only."""
         st = self._agent_state
         bits = ["🤖", "Agent"]
-        if st.get("agent"):
+        if self.agent_mode:
+            bits.append(st.get("agent") or (self.agent_box.currentData() or "build"))
+        elif st.get("agent"):
             bits.append(st["agent"])
         bits.append(st.get("phase") or "idle")
         if st.get("step") and st.get("max_steps"):
@@ -2515,7 +2517,29 @@ class OllamaGUI(QMainWindow):
             bits.append(st["tool"])
         elif st.get("note"):
             bits.append(st["note"])
+        if self.agent_mode and self.agent_workdir and os.path.isdir(self.agent_workdir):
+            bits.append(self._agents_md_bit())
         self.agent_state_label.setText(" · ".join(bits))
+
+    def _discover_agents(self, workdir: str) -> list:
+        try:
+            from core.instructions import discover
+            return discover(workdir) or []
+        except Exception:
+            return []
+
+    def _agents_md_bit(self) -> str:
+        """AGENTS.md ✓/✗ for the working directory — driven by the real
+        dev-assist discovery, cached ~5s so event floods don't hit disk."""
+        import time
+        now = time.time()
+        cached = getattr(self, "_agents_bit_cache", None)
+        if (cached is None or cached[0] != self.agent_workdir
+                or now - cached[2] > 5.0):
+            ok = bool(self._discover_agents(self.agent_workdir or ""))
+            self._agents_bit_cache = (self.agent_workdir, ok, now)
+            return "📋 AGENTS.md ✓" if ok else "📋 AGENTS.md ✗"
+        return "📋 AGENTS.md ✓" if cached[1] else "📋 AGENTS.md ✗"
 
     def _on_agent_event(self, kind, text):
         """`text` grows the answer bubble; every other real agent event feeds
@@ -2733,6 +2757,7 @@ class OllamaGUI(QMainWindow):
         self.agent_btn.setText("🤖 Agent: ON")
         if self.agent_box.count() == 0:
             self._populate_agent_picker()
+        self._update_agent_state()
         self._add_status("🤖 Agent mode ON")
 
     def _populate_agent_picker(self):
@@ -2983,6 +3008,8 @@ class OllamaGUI(QMainWindow):
             self._update_input_state()
             return
         self.agent_workdir = path
+        self._agents_bit_cache = None       # AGENTS.md detection is stale now
+        self._slash_names_cache = None
         self._update_dir_label()
         self._save_settings()
         self._update_input_state()
