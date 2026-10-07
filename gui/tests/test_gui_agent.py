@@ -855,3 +855,109 @@ def test_think_buffer_cleared_on_new_run_and_clear(gui, monkeypatch, tmp_path):
     assert gui._think == []
     assert gui._think_expanded is False
     assert "Agent reasoning" not in gui.chat.toHtml()
+
+
+# ── 8. input gating (single _update_input_state) + memory toggle ─────────────
+def test_rag_busy_blocks_chat_until_released(gui):
+    # no directory → already disabled; RAG busy must keep it that way
+    gui._set_rag_ui_busy(True)
+    assert gui.input.isEnabled() is False
+    assert gui.send_btn.isEnabled() is False
+    assert "Indexing knowledge base" in gui.input.placeholderText()
+    gui._set_rag_ui_busy(False)
+    assert gui.input.isEnabled() is False        # still no directory
+
+    # with a directory: RAG busy overrides the "dir ok AND server ok" state
+    gui.agent_workdir = "/tmp"
+    gui._update_input_state()
+    assert gui.input.isEnabled() is True
+    gui._set_rag_ui_busy(True)
+    assert gui.input.isEnabled() is False        # busy wins
+    assert gui.send_btn.isEnabled() is False
+    gui._set_rag_ui_busy(False)                  # back to enabled
+    assert gui.input.isEnabled() is True
+    assert gui.send_btn.isEnabled() is True
+
+
+def test_server_state_change_routes_through_single_gate(gui):
+    gui.agent_workdir = "/tmp"
+    gui._update_input_state()
+    assert gui.input.isEnabled() is True
+
+    gui._set_ui_server_state(False)              # server went away
+    assert gui.input.isEnabled() is False
+    assert gui.send_btn.isEnabled() is False
+    assert "server stopped" in gui.input.placeholderText().lower()
+
+    gui._set_ui_server_state(True)               # server back
+    assert gui.input.isEnabled() is True
+    assert gui.send_btn.isEnabled() is True
+
+
+def test_streaming_disables_input_and_done_re_enables(gui, monkeypatch,
+                                                      tmp_path):
+    started = threading.Event()
+
+    def fake_run_agent(task, *, workdir, on_event=None, **kw):
+        started.set()
+        time.sleep(0.3)
+        return "done reply"
+
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    assert gui.input.isEnabled() is True
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    gui._toggle_agent_mode()
+    gui.input.setPlainText("hi")
+    gui._send()
+    assert started.wait(5)
+    assert gui._is_streaming is True
+    assert gui.input.isEnabled() is False        # busy while streaming
+    assert gui.send_btn.isEnabled() is False
+
+    assert _pump_until(lambda: gui.thread is None)
+    assert gui.input.isEnabled() is True         # released after the run
+    assert gui.send_btn.isEnabled() is True
+
+
+def test_stop_releases_streaming_gate(gui, monkeypatch, tmp_path):
+    started = threading.Event()
+
+    def slow(task, *, workdir, on_event=None, **kw):
+        started.set()
+        time.sleep(0.6)
+        return "late"
+
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    monkeypatch.setattr(agent_bridge, "run_agent", slow)
+    gui._toggle_agent_mode()
+    gui.input.setPlainText("go")
+    gui._send()
+    assert started.wait(5)
+    assert gui.input.isEnabled() is False
+
+    gui._stop_or_reload()
+    assert gui.thread is None
+    assert gui.input.isEnabled() is True         # Stop opens the input again
+
+
+def test_persistent_memory_toggle_survives_settings_load(tmp_path, monkeypatch):
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    win = _build_gui(tmp_path, monkeypatch, dialog=str(d),
+                     settings={"persistent_memory": True})
+    try:
+        assert win._persistent_memory is True    # not clobbered by __init__
+        assert win.mem_btn.text() == "🧠 Persistent"
+    finally:
+        win.close()
+        win.deleteLater()
+        _qapp().processEvents()

@@ -367,6 +367,49 @@ class TestApplyPatch:
         result = execute_tool("apply_patch", {"patch_text": "no markers here"}, str(tmp_path))
         assert "Error" in result
 
+    def test_apply_patch_changes_are_undoable(self, tmp_path):
+        """apply_patch is tracked like write/edit: ↩ Undo restores every file
+        it touched, including newly created files, in one call."""
+        from core import change_tracker
+        from core.tools import execute_tool
+        change_tracker.new_run()
+        d = str(tmp_path / "proj")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "keep.txt"), "w") as f:
+            f.write("old line\n")
+        with open(os.path.join(d, "gone.txt"), "w") as f:
+            f.write("bye\n")
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Add File: new.txt\n"
+            "+hello\n"
+            "*** Update File: keep.txt\n"
+            "@@\n"
+            "-old line\n"
+            "+new line\n"
+            "*** Delete File: gone.txt\n"
+            "*** End Patch"
+        )
+        result = execute_tool("apply_patch", {"patch_text": patch_text}, d)
+        assert "Success" in result
+        assert open(os.path.join(d, "new.txt")).read() == "hello\n"
+
+        tracker = change_tracker.get_tracker()
+        assert tracker.has_changes()
+        touched = sorted(os.path.basename(p) for p in tracker.touched_paths())
+        assert touched == ["gone.txt", "keep.txt", "new.txt"]
+        assert "3 files changed" in tracker.diffstat()
+
+        restored = tracker.undo()
+        assert sorted(os.path.basename(p) for p in restored) == \
+            ["gone.txt", "keep.txt", "new.txt"]
+        # newly created file is deleted again; edits/deletes are restored
+        assert not os.path.exists(os.path.join(d, "new.txt"))
+        assert open(os.path.join(d, "keep.txt")).read() == "old line\n"
+        assert open(os.path.join(d, "gone.txt")).read() == "bye\n"
+        assert not tracker.has_changes()
+
     def test_missing_patch_text(self, tmp_path):
         from core.tools import execute_tool
         result = execute_tool("apply_patch", {}, str(tmp_path))

@@ -148,11 +148,11 @@ class OllamaGUI(QMainWindow):
         self._agent_state = {"phase": "idle", "agent": "", "step": 0,
                              "max_steps": 0, "tool": "", "note": ""}
 
+        # Declared BEFORE _load_settings() so a persisted value survives.
+        self._persistent_memory = False   # toggle: persistent vs session-only
+
         self._load_settings()   # overwrite defaults with persisted values
         self._client = OllamaClient(host=self.ollama_host)  # re-point at saved host
-
-        # ── Persistent Memory ────────────────────────────────────────
-        self._persistent_memory = False   # toggle: persistent vs session-only
 
         # ── Ollama binary path ───────────────────────────────────────
         _saved_bin       = load_ollama_bin()
@@ -162,6 +162,7 @@ class OllamaGUI(QMainWindow):
         self._chat_log:    list[dict] = []   # {type, content, label?}
         self._code_store:  list[str]  = []   # code blocks for copy
         self._is_streaming     = False
+        self._rag_busy        = False        # RAG indexing disables chat input
         self._streaming_ai_idx = -1           # index of the AI message being streamed
 
         # Ollama server state
@@ -1017,18 +1018,14 @@ class OllamaGUI(QMainWindow):
 
     def _set_rag_ui_busy(self, busy: bool):
         """Lock/unlock all interactive widgets during RAG indexing."""
+        self._rag_busy = busy
         self.rag_file_btn.setEnabled(not busy)
         self.rag_folder_btn.setEnabled(not busy)
         self.embed_box.setEnabled(not busy)
         self.rag_progress.setVisible(busy)
         self.rag_stop_btn.setVisible(busy)
-        # Also disable chat send so user doesn't trigger RAG search mid-index
-        self.send_btn.setEnabled(not busy)
-        self.input.setEnabled(not busy)
-        if busy:
-            self.input.setPlaceholderText("⏳ Indexing knowledge base… please wait")
-        else:
-            self.input.setPlaceholderText("Type your message… (Ctrl+Enter to send)")
+        # input/send go through the one gating function (workdir AND server AND busy)
+        self._update_input_state()
 
     def _stop_rag_indexing(self):
         """Gracefully stop the running RAG index worker."""
@@ -1421,6 +1418,7 @@ class OllamaGUI(QMainWindow):
         ai_label = f"🤖 AI{mode_tag}"
         self._start_ai_msg(ai_label)
         self._update_stop_btn(True)
+        self._update_input_state()        # streaming → input disabled
 
         # Build history
         if self.agent_mode:
@@ -1603,12 +1601,14 @@ class OllamaGUI(QMainWindow):
         self._is_streaming = False
         self._render_chat()
         self._update_stop_btn(False)
+        self._update_input_state()
         self._cleanup_thread()
 
     def _on_error(self, err: str):
         self._is_streaming = False
         self._log(f"❌ Error: {err}")
         self._render_chat()
+        self._update_input_state()
         QMessageBox.critical(self, "Error", err)
         self._update_stop_btn(False)
         self._cleanup_thread()
@@ -1619,6 +1619,7 @@ class OllamaGUI(QMainWindow):
             self._log("⚠️ Stopped.")
             self._render_chat()
             self._update_stop_btn(False)
+            self._update_input_state()
             self._cleanup_thread()   # stop + wait + disconnect + deleteLater
         elif self.last_prompt and self.current_conv_id:
             self.input.setPlainText(self.last_prompt)
@@ -2024,10 +2025,8 @@ class OllamaGUI(QMainWindow):
         """Gracefully stop Ollama — disable chat UI, clear models."""
         self._log("\n🔴 Stopping Ollama server…\n")
 
-        # Disable chat while server is off
-        self.send_btn.setEnabled(False)
-        self.input.setEnabled(False)
-        self.input.setPlaceholderText("⏸ Ollama server stopped — start server to chat")
+        # Disable chat while server is off (through the single gating fn)
+        self._update_input_state(False)
         self.model_box.setEnabled(False)
 
         def _do_stop():
@@ -2538,6 +2537,7 @@ class OllamaGUI(QMainWindow):
         self._update_agent_state()
         self._render_chat()
         self._update_stop_btn(False)
+        self._update_input_state()
         self._refresh_agent_changes()
         self._cleanup_thread()
 
@@ -2725,15 +2725,21 @@ class OllamaGUI(QMainWindow):
             self.dir_label.setToolTip("Choose a working directory (📁 Open Dir)")
 
     def _update_input_state(self, server_ok: bool | None = None):
-        """Directory-first gating: chat input and Send stay disabled until a
-        valid working directory exists (and the server/API mode allows chat)."""
+        """THE single gate for chat input/Send: enabled only when a valid
+        working directory exists AND the server/API allows chat AND nothing is
+        busy (streaming or RAG indexing). Every enable/disable routes here."""
         if server_ok is None:
             server_ok = bool(self._server_running) or bool(self.api_mode)
         has_dir = bool(self.agent_workdir and os.path.isdir(self.agent_workdir))
-        enabled = has_dir and server_ok
+        busy = self._rag_busy or bool(self._is_streaming)
+        enabled = has_dir and server_ok and not busy
         self.input.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
-        if not has_dir:
+        if busy:
+            self.input.setPlaceholderText(
+                "⏳ Indexing knowledge base… please wait" if self._rag_busy
+                else "⏳ Model is replying… please wait")
+        elif not has_dir:
             self.input.setPlaceholderText(
                 "📁 Pick a working directory (📁 Open Dir) to chat…")
         elif not server_ok:
@@ -2752,6 +2758,7 @@ class OllamaGUI(QMainWindow):
         self._think = []
         self._think_expanded = False
         self._is_streaming = False
+        self._update_input_state()
         self.chat.clear()
 
     # Ctrl+Enter sends
