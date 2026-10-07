@@ -961,3 +961,88 @@ def test_persistent_memory_toggle_survives_settings_load(tmp_path, monkeypatch):
         win.close()
         win.deleteLater()
         _qapp().processEvents()
+
+
+# ── 9. agent picker (3.1) ─────────────────────────────────────────────────────
+def test_agent_picker_populates_from_devassist_registry(gui, monkeypatch):
+    fake_agents = [
+        {"id": "build", "name": "build", "description": "Default"},
+        {"id": "coder", "name": "coder", "description": "Implementation"},
+        {"id": "mycrew", "name": "mycrew", "description": "User-defined"},
+    ]
+    monkeypatch.setattr(agent_bridge, "available_agents", lambda: fake_agents)
+    gui._populate_agent_picker()
+    assert gui.agent_box.count() == 3
+    assert gui.agent_box.itemData(1) == "coder"
+    assert gui.agent_box.itemData(2) == "mycrew"
+    assert gui.agent_box.currentData() == "build"   # default agent honored
+
+
+def test_agent_picker_falls_back_when_devassist_missing(gui, monkeypatch):
+    monkeypatch.setattr(agent_bridge, "available_agents",
+                        lambda: [{"id": "build", "name": "build", "description": "Default"}])
+    gui._populate_agent_picker()
+    assert gui.agent_box.count() == 1
+    assert gui.agent_box.currentData() == "build"
+
+
+def test_send_passes_picked_agent_to_worker(gui, monkeypatch, tmp_path):
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    assert gui.input.isEnabled() is True
+
+    agents = [
+        {"id": "build", "name": "build", "description": "Default"},
+        {"id": "coder", "name": "coder", "description": "Implementation"},
+    ]
+    monkeypatch.setattr(agent_bridge, "available_agents", lambda: agents)
+    gui._populate_agent_picker()
+    gui.agent_box.setCurrentIndex(gui.agent_box.findData("coder"))
+
+    calls = []
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None,
+                       max_steps=24, agent="build", extra_context=""):
+        calls.append(agent)
+        return "coder response"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    gui._toggle_agent_mode()
+    gui.input.setPlainText("go")
+    gui._send()
+    assert _pump_until(lambda: gui.thread is None)
+    assert calls == ["coder"], f"agent id not passed: {calls}"
+    assert gui._agent_state.get("agent") == "coder"
+    assert "coder" in gui.agent_state_label.text()
+
+
+def test_picked_reviewer_is_read_only_in_state_strip(gui, monkeypatch, tmp_path):
+    """Picking reviewer still routes the run, and the strip shows it — the
+    reviewer agent itself never volunteers its own setup in replies."""
+    d = tmp_path / "proj"
+    d.mkdir(exist_ok=True)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(d)))
+    gui._select_workdir()
+    agents = [{"id": "reviewer", "name": "reviewer",
+               "description": "Read-only reviewer"}]
+    monkeypatch.setattr(agent_bridge, "available_agents", lambda: agents)
+    gui._populate_agent_picker()
+    gui.agent_box.setCurrentIndex(0)
+
+    captured = []
+    def fake_run_agent(task, *, workdir, approver=None, on_event=None,
+                       max_steps=24, agent="build", extra_context=""):
+        captured.append(agent)
+        on_event("route", agent)
+        return "review done"
+
+    monkeypatch.setattr(agent_bridge, "run_agent", fake_run_agent)
+    gui._toggle_agent_mode()
+    gui.input.setPlainText("review the change")
+    gui._send()
+    assert _pump_until(lambda: gui.thread is None)
+    assert captured == ["reviewer"]
+    assert gui.agent_state_label.text() == "🤖 · Agent · reviewer · done"

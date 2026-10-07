@@ -459,6 +459,14 @@ class OllamaGUI(QMainWindow):
         self.agent_btn.clicked.connect(self._toggle_agent_mode)
         top.addWidget(self.agent_btn)
 
+        self.agent_box = QComboBox()
+        self.agent_box.setMinimumHeight(60)
+        self.agent_box.setMinimumWidth(150)
+        self.agent_box.setToolTip(
+            "Which dev-assist agent runs your request (build/coder/reviewer/explore…)")
+        self._populate_agent_picker()
+        top.addWidget(self.agent_box)
+
         self.open_dir_btn = QPushButton("📁 Open Dir")
         self.open_dir_btn.setMinimumHeight(60)
         self.open_dir_btn.setMinimumWidth(180)
@@ -1423,8 +1431,9 @@ class OllamaGUI(QMainWindow):
         # Build history
         if self.agent_mode:
             from workers import AgentWorker
+            agent_id = self.agent_box.currentData() or "build"
             self.thread = AgentWorker(
-                prompt, self.agent_workdir, agent_name="build",
+                prompt, self.agent_workdir, agent_name=agent_id,
                 auto_approve=self._agent_auto_approve,
                 always=self._agent_always,
             )
@@ -1434,7 +1443,7 @@ class OllamaGUI(QMainWindow):
             self.thread.approval_requested.connect(self._on_approval_requested)
             self._think = []
             self._think_expanded = False
-            self._agent_state = {"phase": "running", "agent": "build", "step": 0,
+            self._agent_state = {"phase": "running", "agent": agent_id, "step": 0,
                                  "max_steps": 0, "tool": "", "note": ""}
             self._update_agent_state()
             self.thread.start()
@@ -2689,7 +2698,38 @@ class OllamaGUI(QMainWindow):
             return
         self.agent_mode = True
         self.agent_btn.setText("🤖 Agent: ON")
+        if self.agent_box.count() == 0:
+            self._populate_agent_picker()
         self._add_status("🤖 Agent mode ON")
+
+    def _populate_agent_picker(self):
+        """Fill the agent combo from dev-assist's real routable registry
+        (build/coder/reviewer/explore + user-defined agents)."""
+        try:
+            import agent_bridge
+        except Exception:
+            return
+        self.agent_box.blockSignals(True)
+        self.agent_box.clear()
+        try:
+            agents = agent_bridge.available_agents()
+            default = "build"
+            try:
+                import core.agents as _agents
+                default = _agents._load_settings().get("default_agent") or "build"
+            except Exception:
+                pass
+        except Exception:
+            agents = agent_bridge.available_agents()
+            default = "build"
+        for ag in agents:
+            self.agent_box.addItem(f"🧠 {ag['name']}", ag["id"])
+            self.agent_box.setItemData(
+                self.agent_box.count() - 1, ag.get("description", ""),
+                Qt.ItemDataRole.ToolTipRole)
+        idx = self.agent_box.findData(default)
+        self.agent_box.setCurrentIndex(idx if idx >= 0 else 0)
+        self.agent_box.blockSignals(False)
 
     # ── Working directory (directory-first flow) ────────────────────────
     def _select_workdir(self):

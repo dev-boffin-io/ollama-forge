@@ -23,6 +23,20 @@ def get_error() -> str | None:
     return _IMPORT_ERROR
 
 
+def available_agents() -> list[dict]:
+    """Routable agent specs (id, name, description) from dev-assist core.
+    Falls back to the build agent so the picker never breaks the GUI."""
+    try:
+        from core.agents import routable_agents
+        return [
+            {"id": spec.id, "name": spec.name or spec.id,
+             "description": spec.description or ""}
+            for spec in routable_agents().values()
+        ]
+    except Exception:
+        return [{"id": "build", "name": "build", "description": "Default agent"}]
+
+
 def run_agent(task: str, *, workdir: str, approver=None, on_event=None,
               max_steps: int = 24, agent: str = "build", extra_context: str = "") -> str:
     if da_agent is None:
