@@ -14,6 +14,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="models">🦙 Models</button>
+    <button class="tab" data-tab="chat">💬 Chat</button>
     <button class="tab" data-tab="manage">⚙️ Manage</button>
   </nav>
 
@@ -74,6 +75,32 @@
           <button id="btnRemove" disabled>🗑 Remove</button>
           <button id="btnPush" disabled>⬆ Push to ollama.com</button>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Chat tab ─────────────────────────────────────────────────────── -->
+  <section id="tab-chat" class="tab-panel">
+    <div class="chat-inner">
+      <div class="chat-head">
+        <label class="sec" for="chatModel">💬 Model:</label>
+        <select id="chatModel"></select>
+        <button id="chatRefresh" title="Refresh model list">↻</button>
+        <span id="chatStatus" class="small"></span>
+        <button id="chatNew">＋ New Chat</button>
+      </div>
+
+      <div id="chatMessages" class="chat-messages grow">
+        <div class="chat-empty small">
+          Pick a model and send a message to test it. Responses stream in live,
+          and the conversation is remembered for follow-up questions.
+        </div>
+      </div>
+
+      <div class="chat-composer">
+        <textarea id="chatInput" rows="1" placeholder="Send a message…  (Enter to send · Shift+Enter for newline)"></textarea>
+        <button id="chatSend" class="primary">Send</button>
+        <button id="chatStop" class="danger" hidden>⛔ Stop</button>
       </div>
     </div>
   </section>

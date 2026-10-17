@@ -142,7 +142,10 @@ async function refreshState() {
     renderServer();
     renderAuth();
     updatePush();
-    if (s.serverRunning && !wasRunning) loadModels();
+    if (s.serverRunning && !wasRunning) {
+      loadModels();
+      refreshChatModels();
+    }
     if (!s.serverRunning && wasRunning) clearModels();
   } catch {
     /* server not reachable */
@@ -253,7 +256,10 @@ function escapeHtml(s) {
 function handleModelEvent(ev) {
   if (ev.stream === "line") appendLog(ev.text);
   else if (ev.stream === "progress") setProgress(ev.value);
-  else if (ev.stream === "reload" && ev.what === "models") loadModels();
+  else if (ev.stream === "reload" && ev.what === "models") {
+    loadModels();
+    refreshChatModels();
+  }
   else if (ev.stream === "status") refreshState();
   else if (ev.stream === "auth") {
     state.signedIn = ev.signedIn;
@@ -455,6 +461,187 @@ async function manageSave() {
   refreshState();
 }
 
+// ── Chat tab ──────────────────────────────────────────────────────────────────
+
+const chatState = { messages: [], streaming: false, model: "" };
+let chatCtx = null;
+
+function scrollChat() {
+  const box = $("chatMessages");
+  box.scrollTop = box.scrollHeight;
+}
+
+function chatClearEmpty() {
+  const empty = $("chatMessages").querySelector(".chat-empty");
+  if (empty) empty.remove();
+}
+
+function chatAdd(role, text) {
+  chatClearEmpty();
+  const el = document.createElement("div");
+  el.className = `chat-msg ${role}`;
+  el.textContent = text;
+  $("chatMessages").appendChild(el);
+  scrollChat();
+  return el;
+}
+
+function chatSystem(text) {
+  const el = chatAdd("system", text);
+  return el;
+}
+
+function chatStartAssistant() {
+  chatClearEmpty();
+  const el = document.createElement("div");
+  el.className = "chat-msg assistant streaming";
+
+  const think = document.createElement("details");
+  think.className = "chat-thinking";
+  think.hidden = true;
+  const sum = document.createElement("summary");
+  sum.textContent = "💭 Thinking";
+  const body = document.createElement("div");
+  body.className = "chat-thinking-body";
+  think.append(sum, body);
+
+  const content = document.createElement("div");
+  content.className = "chat-content";
+
+  el.append(think, content);
+  $("chatMessages").appendChild(el);
+  scrollChat();
+  return { el, think, body, content, hasThinking: false, hasContent: false, stats: null };
+}
+
+function chatAddMeta(el, ev) {
+  const meta = document.createElement("div");
+  meta.className = "chat-meta";
+  const parts = [];
+  if (ev.evalCount) parts.push(`${ev.evalCount} tokens`);
+  if (ev.evalCount && ev.evalDuration) {
+    const tps = ev.evalCount / (ev.evalDuration / 1e9);
+    parts.push(`${tps.toFixed(1)} tok/s`);
+  }
+  if (ev.totalDuration) parts.push(`${(ev.totalDuration / 1e9).toFixed(1)}s total`);
+  if (!parts.length) return;
+  meta.textContent = parts.join(" · ");
+  el.appendChild(meta);
+}
+
+function setChatBusy(busy) {
+  chatState.streaming = busy;
+  $("chatSend").disabled = busy;
+  $("chatStop").hidden = !busy;
+  $("chatInput").disabled = busy;
+  $("chatStatus").textContent = busy ? "⋯ generating" : "";
+}
+
+function handleChatEvent(ev) {
+  if (!chatCtx) return;
+  if (ev.stream === "chat") {
+    if (ev.type === "thinking") {
+      chatCtx.hasThinking = true;
+      chatCtx.think.hidden = false;
+      chatCtx.body.textContent += ev.text;
+    } else if (ev.type === "content") {
+      chatCtx.hasContent = true;
+      chatCtx.content.textContent += ev.text;
+    } else if (ev.type === "stats") {
+      chatCtx.stats = ev;
+    }
+    scrollChat();
+  } else if (ev.stream === "line") {
+    chatSystem(ev.text);
+  }
+}
+
+async function sendChat() {
+  if (chatState.streaming) return;
+  const model = $("chatModel").value;
+  const text = $("chatInput").value.trim();
+  if (!model) return chatSystem("⚠️ No model selected — start the server, then Refresh.");
+  if (!text) return;
+
+  chatAdd("user", text);
+  chatState.messages.push({ role: "user", content: text });
+  $("chatInput").value = "";
+  autoGrow($("chatInput"));
+  setChatBusy(true);
+
+  chatCtx = chatStartAssistant();
+  try {
+    await streamRun(
+      { task: "chat", model, messages: chatState.messages },
+      handleChatEvent
+    );
+  } catch (e) {
+    chatSystem(`❌ ${e.message}`);
+  } finally {
+    finalizeChat();
+  }
+}
+
+function finalizeChat() {
+  setChatBusy(false);
+  if (!chatCtx) return;
+  chatCtx.el.classList.remove("streaming");
+  const answer = chatCtx.content.textContent;
+  if (answer) {
+    chatState.messages.push({ role: "assistant", content: answer });
+  } else if (!chatCtx.hasThinking) {
+    chatCtx.el.remove();
+  }
+  if (chatCtx.stats) chatAddMeta(chatCtx.el, chatCtx.stats);
+  scrollChat();
+  chatCtx = null;
+}
+
+async function stopChat() {
+  if (!chatState.streaming) return;
+  await postJSON("/api/cancel", {});
+}
+
+function newChat() {
+  chatState.messages = [];
+  $("chatMessages").innerHTML =
+    '<div class="chat-empty small">New conversation. Send a message to begin.</div>';
+  $("chatStatus").textContent = "";
+}
+
+async function refreshChatModels() {
+  const sel = $("chatModel");
+  const prev = chatState.model || sel.value;
+  try {
+    const data = await getJSON("/api/models");
+    sel.innerHTML = "";
+    if (!data.models.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "(no models — pull one first)";
+      sel.appendChild(o);
+      chatState.model = "";
+      return;
+    }
+    for (const m of data.models) {
+      const o = document.createElement("option");
+      o.value = m.name;
+      o.textContent = `${m.name}  (${m.sizeHuman})`;
+      sel.appendChild(o);
+    }
+    if (prev && data.models.some((m) => m.name === prev)) sel.value = prev;
+    chatState.model = sel.value;
+  } catch {
+    sel.innerHTML = '<option value="">(start the server to list models)</option>';
+    chatState.model = "";
+  }
+}
+
+function autoGrow(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+}
+
 // ── File browser modal ────────────────────────────────────────────────────────
 
 let fsMode = "mf";
@@ -564,6 +751,7 @@ function initTabs() {
       for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t === btn);
       for (const p of document.querySelectorAll(".tab-panel"))
         p.classList.toggle("active", p.id === `tab-${btn.dataset.tab}`);
+      if (btn.dataset.tab === "chat") refreshChatModels();
     });
   }
 }
@@ -608,6 +796,21 @@ function wire() {
   $("btnUpgrade").addEventListener("click", manageUpgrade);
   $("btnUninstall").addEventListener("click", manageUninstall);
   $("btnManageCancel").addEventListener("click", manageCancel);
+
+  $("chatRefresh").addEventListener("click", refreshChatModels);
+  $("chatNew").addEventListener("click", newChat);
+  $("chatSend").addEventListener("click", sendChat);
+  $("chatStop").addEventListener("click", stopChat);
+  $("chatModel").addEventListener("change", () => {
+    chatState.model = $("chatModel").value;
+  });
+  $("chatInput").addEventListener("input", () => autoGrow($("chatInput")));
+  $("chatInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
 
   $("fsUp").addEventListener("click", () => {
     const parts = fsCurrent.split("/");

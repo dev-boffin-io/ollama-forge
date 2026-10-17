@@ -4,6 +4,7 @@ A lightweight, **zero-dependency** web UI and CLI for managing [Ollama](https://
 
 - start/stop the Ollama server
 - browse, inspect, pull, create, push and remove models
+- chat with any installed model to test it
 - sign in/out to ollama.com
 - install, upgrade, version-check and uninstall the Ollama binary itself
 
@@ -116,6 +117,18 @@ is pushed:
 - **Version** — shows installed vs. latest release.
 - **Install / Upgrade / Uninstall** — with streamed output and cancellation.
 
+### Chat tab
+- **Run a model** — pick any installed model from the dropdown to test it.
+- **Streaming replies** — tokens arrive live; reasoning/`thinking` output (for
+  models like Qwen3 and DeepSeek-R1) is shown in a collapsible block.
+- **Multi-turn memory** — the whole conversation is sent back each turn.
+- **Stop / New Chat** — cancel a generation mid-stream or reset the transcript.
+- **Stats** — token count and tokens/sec for each reply.
+
+This tab drives the model through Ollama's `/api/chat` streaming endpoint — the
+same engine `ollama run` uses under the hood — so what you test here matches the
+CLI, with clean streamed output instead of a terminal REPL.
+
 ## Configuration
 
 Settings live in `~/.ollama_gui/settings.json`:
@@ -152,11 +165,15 @@ JSON (`application/x-ndjson`) for long-running tasks.
 
 Tasks for `POST /api/run` (body `{ "task": "..." }`):
 
-`pull` · `push` · `create` · `remove` · `serve-start` · `serve-stop` ·
+`pull` · `push` · `create` · `chat` · `remove` · `serve-start` · `serve-stop` ·
 `signin` · `signout` · `manage`
 
 `manage` takes an extra `"action"`: `update` | `install` | `upgrade` | `uninstall`,
 and an optional `"password"` for `sudo` on Linux/macOS.
+
+`chat` takes `"model"` and a `"messages"` array (`[{ "role": "user", "content": "…" }]`)
+and streams NDJSON frames: `{ "stream": "chat", "type": "thinking" | "content" | "stats", … }`.
+Cancel an in-flight chat with `POST /api/cancel`.
 
 ## Platform notes
 

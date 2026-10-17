@@ -22,7 +22,7 @@ import {
   IS_WINDOWS,
 } from "./lib/helpers.js";
 import { spawnStream, run } from "./lib/exec.js";
-import { checkServer, listModels, showModel } from "./lib/ollama.js";
+import { checkServer, listModels, showModel, chatStream } from "./lib/ollama.js";
 import { runManage, getCurrentVersion, getLatestVersion } from "./lib/manage.js";
 import { getEmbeddedAsset, isEmbedded } from "./lib/assets.js";
 
@@ -47,6 +47,7 @@ const MIME = {
 // ── shared process state ─────────────────────────────────────────────────────
 let serverProc = null;
 let activeProc = null;
+let activeChatAbort = null;
 
 function resolveBin() {
   return loadOllamaBin() || autodetectOllama() || "ollama";
@@ -290,6 +291,41 @@ async function handleRun(params, send, res) {
         break;
       }
 
+      case "chat": {
+        const model = String(params.model || "").trim();
+        const messages = Array.isArray(params.messages) ? params.messages : [];
+        if (!model || messages.length === 0) {
+          send({ stream: "line", text: "⚠️ Pick a model and type a message." });
+          break;
+        }
+        if (!(await checkServer(host, 3000))) {
+          send({ stream: "line", text: "⚠️ Start the server first." });
+          break;
+        }
+        const controller = new AbortController();
+        activeChatAbort = controller;
+        // If the browser goes away, stop streaming from Ollama too.
+        res.on("close", () => {
+          if (!res.writableEnded) controller.abort();
+        });
+        try {
+          await chatStream(host, {
+            model,
+            messages,
+            signal: controller.signal,
+            onThinking: (text) => send({ stream: "chat", type: "thinking", text }),
+            onContent: (text) => send({ stream: "chat", type: "content", text }),
+            onDone: (info) => send({ stream: "chat", type: "stats", ...info }),
+          });
+        } catch (e) {
+          if (controller.signal.aborted) send({ stream: "line", text: "⛔ Stopped." });
+          else send({ stream: "line", text: `❌ ${e}` });
+        } finally {
+          if (activeChatAbort === controller) activeChatAbort = null;
+        }
+        break;
+      }
+
       case "remove": {
         const model = String(params.model || "").trim();
         const r = await run(bin, ["rm", model], {});
@@ -468,6 +504,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/cancel" && req.method === "POST") {
+    if (activeChatAbort) {
+      activeChatAbort.abort();
+      activeChatAbort = null;
+    }
     if (activeProc && activeProc.exitCode === null) {
       activeProc.kill("SIGTERM");
       setTimeout(() => {
