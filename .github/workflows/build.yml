@@ -1,0 +1,100 @@
+name: Build single-file binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: linux-x64,     bin: ollama-forge }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,   bin: ollama-forge }
+          - { os: macos-latest,     target: macos-arm64,   bin: ollama-forge }
+          - { os: macos-15-intel,   target: macos-x64,     bin: ollama-forge }
+          - { os: windows-latest,   target: windows-x64,   bin: ollama-forge.exe }
+          - { os: windows-11-arm,   target: windows-arm64, bin: ollama-forge.exe }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install build dependencies
+        run: npm ci
+
+      - name: Build binary
+        run: npm run build
+
+      - name: Smoke test (unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./dist/${{ matrix.bin }} --help || true
+          FORGE_PORT=11440 ./dist/${{ matrix.bin }} &
+          pid=$!
+          sleep 2
+          curl -fsS http://127.0.0.1:11440/api/state
+          kill "$pid"
+
+      - name: Smoke test (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\dist\${{ matrix.bin }} --help
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ollama-forge-${{ matrix.target }}
+          path: dist/${{ matrix.bin }}
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Attach binaries to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Flatten and rename
+        run: |
+          mkdir -p release
+          for f in artifacts/*/*; do
+            [ -f "$f" ] || continue
+            dir=$(basename "$(dirname "$f")")
+            case "$(basename "$f")" in
+              *.exe) cp "$f" "release/${dir}.exe" ;;
+              *)     cp "$f" "release/${dir}" ;;
+            esac
+          done
+          ls -la release
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release/*
+          generate_release_notes: true

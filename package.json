@@ -1,0 +1,24 @@
+{
+  "name": "ollama-forge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight, zero-runtime-dependency web UI + CLI manager for Ollama, compilable to a single self-contained binary.",
+  "bin": {
+    "ollama-forge": "./main.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "cli": "node cli.js",
+    "build": "node build.mjs",
+    "build:bundle": "node build.mjs --bundle-only"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6"
+  }
+}

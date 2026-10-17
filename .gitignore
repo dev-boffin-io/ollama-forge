@@ -1,0 +1,9 @@
+# Dependencies (build-time only)
+node_modules/
+
+# Build output
+dist/
+
+# Logs / OS cruft
+*.log
+.DS_Store

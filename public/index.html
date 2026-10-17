@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🦙 Ollama Forge</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🦙 Ollama Forge</h1>
+    <div id="serverPill" class="pill checking">Ollama: Checking…</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="models">🦙 Models</button>
+    <button class="tab" data-tab="manage">⚙️ Manage</button>
+  </nav>
+
+  <!-- ── Models tab ───────────────────────────────────────────────────── -->
+  <section id="tab-models" class="tab-panel active">
+    <div class="columns">
+      <div class="panel left">
+        <button id="btnServe" class="big">▶ Start Ollama Serve</button>
+        <button id="btnRefresh" class="big" disabled>↻ Refresh Model List</button>
+
+        <hr />
+
+        <div id="authLabel" class="auth off">🔴 Not signed in to ollama.com</div>
+        <div class="row">
+          <button id="btnSignin" class="big">🔑 Sign In</button>
+          <button id="btnSignout" class="big" disabled>🚪 Sign Out</button>
+        </div>
+
+        <hr />
+
+        <div class="row">
+          <input id="inpPull" list="popularModels" placeholder="Search or type model name…" />
+          <button id="btnPull">⬇ Pull</button>
+          <button id="btnCancel" class="danger" disabled>⛔ Cancel</button>
+        </div>
+        <datalist id="popularModels"></datalist>
+
+        <div class="row">
+          <input id="inpCreate" placeholder="Model name (user/my-model)" />
+          <button id="btnCreate" disabled>🛠 Create</button>
+        </div>
+
+        <div class="row">
+          <span id="mfLabel" class="small">No Modelfile selected</span>
+          <button id="btnBrowseMf">📂 Browse</button>
+        </div>
+
+        <label class="sec">📄 Modelfile Content:</label>
+        <textarea id="editMf" class="grow" placeholder="# Example Modelfile&#10;FROM llama3.2&#10;PARAMETER temperature 0.8&#10;SYSTEM You are a helpful assistant."></textarea>
+      </div>
+
+      <div class="panel right">
+        <label class="sec center">📋 Available Models</label>
+        <ul id="modelList" class="model-list grow"></ul>
+
+        <div class="card">
+          <label class="sec center">📄 Model Details</label>
+          <div id="modelDetails" class="details">Select a model to see details…</div>
+        </div>
+
+        <label class="sec center">📜 Output Log</label>
+        <pre id="log" class="log grow"></pre>
+
+        <div class="progress" id="progressWrap" hidden><div id="progressBar"></div></div>
+
+        <div class="row footer-row">
+          <span id="selectedLabel" class="small">No model selected</span>
+          <button id="btnRemove" disabled>🗑 Remove</button>
+          <button id="btnPush" disabled>⬆ Push to ollama.com</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Manage tab ───────────────────────────────────────────────────── -->
+  <section id="tab-manage" class="tab-panel">
+    <div class="manage-inner">
+      <label class="sec">🗂 Ollama Binary Path:</label>
+      <div class="row">
+        <input id="binPath" placeholder="/usr/local/bin/ollama" />
+        <button id="btnPathAuto">🔍 Auto</button>
+        <button id="btnPathBrowse">📁 Browse</button>
+        <button id="btnPathSave">✔ Save</button>
+      </div>
+
+      <hr />
+
+      <div class="row version-row">
+        <span id="curVer" class="sec">Installed version:  —</span>
+        <span id="latVer" class="sec">Latest version:  —</span>
+      </div>
+
+      <div class="row">
+        <button id="btnCheckVer" class="big">🔍 Check Version</button>
+        <button id="btnInstall" class="big">⬇ Install Ollama</button>
+        <button id="btnUpgrade" class="big">⬆ Upgrade Ollama</button>
+        <button id="btnUninstall" class="big danger">🗑 Uninstall Ollama</button>
+      </div>
+
+      <label class="sec center">📜 Output</label>
+      <pre id="manageLog" class="log grow"></pre>
+      <button id="btnManageCancel" class="danger big" hidden>⛔ Cancel</button>
+    </div>
+  </section>
+
+  <!-- ── File browser modal ───────────────────────────────────────────── -->
+  <div id="fsModal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <strong id="fsTitle">Select file</strong>
+        <button id="fsClose" class="x">✕</button>
+      </div>
+      <div class="row">
+        <button id="fsUp">⬆ Up</button>
+        <button id="fsHome">🏠 Home</button>
+        <input id="fsPath" readonly />
+      </div>
+      <ul id="fsList" class="fs-list"></ul>
+    </div>
+  </div>
+
+  <!-- ── Password modal ───────────────────────────────────────────────── -->
+  <div id="pwdModal" class="modal" hidden>
+    <div class="modal-box small-box">
+      <div class="modal-head"><strong>sudo Password Required</strong></div>
+      <p class="small">Enter sudo password to continue:</p>
+      <input id="pwdInput" type="password" />
+      <div class="row right-align">
+        <button id="pwdCancel">Cancel</button>
+        <button id="pwdOk" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm modal ────────────────────────────────────────────────── -->
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-box small-box">
+      <div class="modal-head"><strong id="confirmTitle">Confirm</strong></div>
+      <p id="confirmText" class="small"></p>
+      <div class="row right-align">
+        <button id="confirmNo">No</button>
+        <button id="confirmYes" class="danger">Yes</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
